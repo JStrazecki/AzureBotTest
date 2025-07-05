@@ -66,4 +66,4 @@ jobs:
         with:
           app-name: 'sqlbot'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_BBC8AE05955E4F16A29DEEF6E4B8F0E2 }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_D3D88C79E84D45CD8FE26CC92C99D6EB }}
