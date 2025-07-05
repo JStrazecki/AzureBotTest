@@ -1,6 +1,0 @@
-{
-  "name": "sql-assistant-bot",
-  "script": "gunicorn",
-  "args": ["--bind", "0.0.0.0:8000", "--worker-class", "aiohttp.GunicornWebWorker", "--timeout", "600", "app:APP"],
-  "interpreter": "python3.11"
-}
