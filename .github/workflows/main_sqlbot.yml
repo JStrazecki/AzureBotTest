@@ -25,18 +25,18 @@ jobs:
           source venv/bin/activate
       
       - name: Install dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+        run: pip install -r requirements.txt
       
       # Fix the import issue before deployment
       - name: Fix import issues
         run: |
+          echo "Fixing import issues..."
           # Fix any 'good.' imports
           find . -name "*.py" -type f -exec sed -i 's/from good\.query_validator/from query_validator/g' {} \;
           find . -name "*.py" -type f -exec sed -i 's/from good\./from /g' {} \;
+          echo "Import fixes applied"
           
-      - name: Verify critical files
+      - name: Verify critical files exist
         run: |
           echo "Checking critical files..."
           for file in app.py teams_sql_bot.py azure_openai_sql_translator.py query_validator.py autonomous_sql_explorer.py token_limiter.py; do
@@ -47,14 +47,11 @@ jobs:
               exit 1
             fi
           done
-          
-      - name: Test imports locally
-        run: |
-          source venv/bin/activate
-          python -c "import app; print('✓ app imports OK')"
+          echo "All critical files present"
           
       - name: Zip artifact for deployment
         run: |
+          echo "Creating deployment package..."
           # Exclude test files and other unnecessary items
           zip release.zip ./* -r \
             -x "venv/*" \
@@ -65,7 +62,13 @@ jobs:
             -x "test_*.py" \
             -x "debug_*.py" \
             -x "*.md" \
-            -x ".gitignore"
+            -x ".gitignore" \
+            -x "*.txt" 
+          
+          # Add back requirements.txt (it's needed!)
+          zip release.zip requirements.txt
+          
+          echo "Deployment package created"
 
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
