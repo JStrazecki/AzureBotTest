@@ -1,7 +1,4 @@
-# Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
-# More GitHub Actions for Azure: https://github.com/Azure/actions
-# More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
-
+# .github/workflows/main_sqlbot.yml
 name: Build and deploy Python app to Azure Web App - sqlbot
 
 on:
@@ -28,57 +25,53 @@ jobs:
           source venv/bin/activate
       
       - name: Install dependencies
-        run: pip install -r requirements.txt
-        
-      # Optional: Add step to run tests here (PyTest, Django test suites, etc.)
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
       
-      - name: Create startup script
+      # Fix the import issue before deployment
+      - name: Fix import issues
         run: |
-          cat > startup.sh << 'EOF'
-          #!/bin/bash
-          echo "Starting SQL Assistant Bot..."
-          cd /home/site/wwwroot
+          # Fix any 'good.' imports
+          find . -name "*.py" -type f -exec sed -i 's/from good\.query_validator/from query_validator/g' {} \;
+          find . -name "*.py" -type f -exec sed -i 's/from good\./from /g' {} \;
           
-          # Set up environment
-          export LD_LIBRARY_PATH="/tmp/oryx/platforms/python/3.11.12/lib:$LD_LIBRARY_PATH"
-          export PYTHONPATH="/home/site/wwwroot/antenv/lib/python3.11/site-packages:/home/site/wwwroot:$PYTHONPATH"
-          
-          # Try to find Python in different locations
-          if [ -f "/tmp/oryx/platforms/python/3.11.12/bin/python3.11" ]; then
-              PYTHON="/tmp/oryx/platforms/python/3.11.12/bin/python3.11"
-          elif [ -f "/home/site/wwwroot/antenv/bin/python3.11" ]; then
-              export LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH"
-              PYTHON="/home/site/wwwroot/antenv/bin/python3.11"
-          else
-              PYTHON="python"
-          fi
-          
-          # Start the application
-          echo "Using Python: $PYTHON"
-          exec $PYTHON -m gunicorn --bind 0.0.0.0:8000 --worker-class aiohttp.GunicornWebWorker --timeout 600 --workers 1 app:APP
-          EOF
-          chmod +x startup.sh
-
-      - name: Clean up unnecessary files
+      - name: Verify critical files
         run: |
-          # Remove test files and other unnecessary items
-          rm -f test_*.py
-          rm -rf .git
-          rm -rf .github
-          rm -f .gitignore
+          echo "Checking critical files..."
+          for file in app.py teams_sql_bot.py azure_openai_sql_translator.py query_validator.py autonomous_sql_explorer.py token_limiter.py; do
+            if [ -f "$file" ]; then
+              echo "✓ $file exists"
+            else
+              echo "❌ $file missing!"
+              exit 1
+            fi
+          done
+          
+      - name: Test imports locally
+        run: |
+          source venv/bin/activate
+          python -c "import app; print('✓ app imports OK')"
           
       - name: Zip artifact for deployment
         run: |
-          # Create deployment package
-          zip release.zip ./* -r -x "venv/*" -x ".git/*" -x ".github/*" -x "__pycache__/*" -x "*.pyc"
+          # Exclude test files and other unnecessary items
+          zip release.zip ./* -r \
+            -x "venv/*" \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x "__pycache__/*" \
+            -x "*.pyc" \
+            -x "test_*.py" \
+            -x "debug_*.py" \
+            -x "*.md" \
+            -x ".gitignore"
 
       - name: Upload artifact for deployment jobs
         uses: actions/upload-artifact@v4
         with:
           name: python-app
-          path: |
-            release.zip
-            !venv/
+          path: release.zip
 
   deploy:
     runs-on: ubuntu-latest
@@ -87,7 +80,7 @@ jobs:
       name: 'Production'
       url: ${{ steps.deploy-to-webapp.outputs.webapp-url }}
     permissions:
-      id-token: write #This is required for requesting the JWT
+      id-token: write
 
     steps:
       - name: Download artifact from build job
@@ -98,7 +91,7 @@ jobs:
       - name: Unzip artifact for deployment
         run: unzip release.zip
 
-      - name: 'Deploy to Azure Web App'
+      - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
