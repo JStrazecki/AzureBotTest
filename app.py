@@ -1,12 +1,12 @@
-#!/usr/bin/env python3
+# app.py - Updated main application with built-in admin dashboard
 """
 Main application entry point for SQL Assistant Teams Bot
-Enhanced with MCP integration and performance monitoring
+Now includes built-in admin dashboard at /admin
 """
 
 import os
 import logging
-import asyncio
+import json
 from datetime import datetime
 from aiohttp import web
 from aiohttp.web import Request, Response, json_response
@@ -23,38 +23,112 @@ from botbuilder.core.integration import aiohttp_error_middleware
 from botbuilder.schema import Activity, ErrorResponseException
 from dotenv import load_dotenv
 
-# Import our custom modules
-from teams_sql_bot import SQLAssistantBot, EnhancedMCPClient
-from azure_openai_sql_translator import AzureOpenAISQLTranslator
-from autonomous_sql_explorer import AutonomousSQLExplorer
-
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging with more detail
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('app.log', mode='a')
+    ]
 )
 logger = logging.getLogger(__name__)
 
-# Validate required environment variables
-REQUIRED_ENV_VARS = [
-    "MICROSOFT_APP_ID",
-    "MICROSOFT_APP_PASSWORD",
-    "AZURE_OPENAI_ENDPOINT",
-    "AZURE_OPENAI_API_KEY",
-    "AZURE_FUNCTION_URL",
-    "AZURE_FUNCTION_KEY"
-]
+# Log startup
+logger.info("=== SQL Assistant Bot Starting ===")
+logger.info(f"Python version: {os.sys.version}")
+logger.info(f"Working directory: {os.getcwd()}")
 
-missing_vars = [var for var in REQUIRED_ENV_VARS if not os.environ.get(var)]
-if missing_vars:
-    logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
-    raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+# Import our custom modules with error handling
+try:
+    from azure_openai_sql_translator import AzureOpenAISQLTranslator
+    logger.info("✓ Successfully imported AzureOpenAISQLTranslator")
+except ImportError as e:
+    logger.error(f"❌ Failed to import AzureOpenAISQLTranslator: {e}")
+    raise
+
+try:
+    from teams_sql_bot import SQLAssistantBot
+    logger.info("✓ Successfully imported SQLAssistantBot")
+except ImportError as e:
+    logger.error(f"❌ Failed to import SQLAssistantBot: {e}")
+    # Create a simplified bot as fallback
+    logger.warning("Creating fallback bot implementation")
+    
+    class SimpleSQLBot:
+        def __init__(self, **kwargs):
+            logger.info("Initialized SimpleSQLBot fallback")
+        
+        async def on_turn(self, turn_context: TurnContext):
+            await turn_context.send_activity(
+                MessageFactory.text("🤖 SQL Assistant Bot is running! However, some features are temporarily unavailable. Please check the logs.")
+            )
+    
+    SQLAssistantBot = SimpleSQLBot
+
+# Import admin dashboard
+try:
+    from admin_dashboard import add_admin_routes
+    logger.info("✓ Successfully imported admin dashboard")
+    ADMIN_DASHBOARD_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"⚠️ Admin dashboard not available: {e}")
+    ADMIN_DASHBOARD_AVAILABLE = False
+
+# Check critical environment variables
+def check_environment():
+    """Check and log environment variable status"""
+    required_vars = {
+        "MICROSOFT_APP_ID": "Bot Framework App ID",
+        "MICROSOFT_APP_PASSWORD": "Bot Framework Password",
+        "AZURE_OPENAI_ENDPOINT": "Azure OpenAI Endpoint",
+        "AZURE_OPENAI_API_KEY": "Azure OpenAI API Key",
+        "AZURE_FUNCTION_URL": "Azure Function URL"
+    }
+    
+    missing_vars = []
+    logger.info("Checking environment variables:")
+    
+    for var, description in required_vars.items():
+        value = os.environ.get(var)
+        if value:
+            if "KEY" in var or "PASSWORD" in var:
+                masked = value[:4] + "***" + value[-4:] if len(value) > 8 else "***"
+                logger.info(f"✓ {var}: {masked} ({description})")
+            else:
+                logger.info(f"✓ {var}: {value[:30]}... ({description})")
+        else:
+            logger.error(f"❌ {var}: NOT SET ({description})")
+            missing_vars.append(var)
+    
+    # Optional variables
+    optional_vars = {
+        "AZURE_FUNCTION_KEY": "Function authentication key",
+        "AZURE_OPENAI_DEPLOYMENT_NAME": "OpenAI deployment name (defaults to gpt-4)",
+        "PORT": "Application port (defaults to 8000)"
+    }
+    
+    for var, description in optional_vars.items():
+        value = os.environ.get(var)
+        if value:
+            if "KEY" in var:
+                masked = value[:4] + "***" + value[-4:] if len(value) > 8 else "***"
+                logger.info(f"ℹ️ {var}: {masked} ({description})")
+            else:
+                logger.info(f"ℹ️ {var}: {value} ({description})")
+        else:
+            logger.warning(f"⚠️ {var}: Not set ({description})")
+    
+    return missing_vars
+
+# Check environment
+missing_vars = check_environment()
 
 # Get deployment environment
-DEPLOYMENT_ENV = os.environ.get("DEPLOYMENT_ENV", "development")
+DEPLOYMENT_ENV = os.environ.get("DEPLOYMENT_ENV", "production")
 logger.info(f"Running in {DEPLOYMENT_ENV} environment")
 
 # Create adapter with enhanced error handling
@@ -68,33 +142,17 @@ ADAPTER = BotFrameworkAdapter(SETTINGS)
 # Enhanced error handler
 async def on_error(context: TurnContext, error: Exception):
     """Handle errors in the bot"""
-    logger.error(f"Error in bot: {error}", exc_info=True)
+    logger.error(f"Bot error: {error}", exc_info=True)
     
-    # Send error message to user
     error_message = "Sorry, an error occurred while processing your request."
     
     if isinstance(error, ErrorResponseException):
         error_message += f"\n\nError details: {error.message}"
     elif DEPLOYMENT_ENV == "development":
-        # Show more details in development
         error_message += f"\n\nDebug info: {type(error).__name__}: {str(error)}"
     
     try:
         await context.send_activity(MessageFactory.text(error_message))
-        
-        # Send a trace activity for debugging
-        if DEPLOYMENT_ENV == "development":
-            trace_activity = MessageFactory.trace(
-                "BotError",
-                {
-                    "error_type": error.__class__.__name__,
-                    "error_message": str(error),
-                    "timestamp": datetime.now().isoformat()
-                },
-                label="Error"
-            )
-            await context.send_activity(trace_activity)
-        
     except Exception as e:
         logger.error(f"Error sending error message: {e}")
 
@@ -105,99 +163,72 @@ MEMORY = MemoryStorage()
 CONVERSATION_STATE = ConversationState(MEMORY)
 USER_STATE = UserState(MEMORY)
 
-# Initialize Azure OpenAI translator
+# Initialize Azure OpenAI translator with error handling
+SQL_TRANSLATOR = None
 try:
+    if missing_vars:
+        logger.warning(f"Missing variables: {missing_vars}. SQL translation will be limited.")
+    
     SQL_TRANSLATOR = AzureOpenAISQLTranslator(
-        endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
-        api_key=os.environ.get("AZURE_OPENAI_API_KEY"),
+        endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+        api_key=os.environ.get("AZURE_OPENAI_API_KEY", ""),
         deployment_name=os.environ.get("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4"),
         api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
     )
-    logger.info("Azure OpenAI translator initialized successfully")
+    logger.info("✓ Azure OpenAI translator initialized successfully")
 except Exception as e:
-    logger.error(f"Failed to initialize Azure OpenAI translator: {e}")
-    raise
-
-# Initialize MCP client (optional but recommended)
-MCP_CLIENT = None
-if os.environ.get("MCP_SERVER_URL"):
-    try:
-        MCP_CLIENT = EnhancedMCPClient(os.environ.get("MCP_SERVER_URL"))
-        logger.info("MCP client initialized")
-    except Exception as e:
-        logger.warning(f"MCP client not available: {e}")
-        logger.warning("Bot will run without MCP features (pattern learning, caching)")
-
-# Performance tracking
-class PerformanceTracker:
-    """Track application performance metrics"""
-    def __init__(self):
-        self.start_time = datetime.now()
-        self.request_count = 0
-        self.error_count = 0
-        self.message_count = 0
-        self.query_count = 0
-        self.pattern_hits = 0
-        
-    def record_request(self):
-        self.request_count += 1
-        
-    def record_error(self):
-        self.error_count += 1
-        
-    def record_message(self):
-        self.message_count += 1
-        
-    def record_query(self, used_pattern: bool = False):
-        self.query_count += 1
-        if used_pattern:
-            self.pattern_hits += 1
-    
-    def get_stats(self):
-        uptime = (datetime.now() - self.start_time).total_seconds()
-        return {
-            "uptime_seconds": uptime,
-            "uptime_hours": uptime / 3600,
-            "request_count": self.request_count,
-            "error_count": self.error_count,
-            "message_count": self.message_count,
-            "query_count": self.query_count,
-            "pattern_hits": self.pattern_hits,
-            "pattern_hit_rate": (self.pattern_hits / self.query_count * 100) if self.query_count > 0 else 0,
-            "error_rate": (self.error_count / self.request_count * 100) if self.request_count > 0 else 0
-        }
-
-# Initialize performance tracker
-PERF_TRACKER = PerformanceTracker()
+    logger.error(f"❌ Failed to initialize Azure OpenAI translator: {e}")
+    logger.warning("Bot will run with limited functionality")
 
 # Create the bot
-BOT = SQLAssistantBot(
-    conversation_state=CONVERSATION_STATE,
-    user_state=USER_STATE,
-    sql_translator=SQL_TRANSLATOR,
-    function_url=os.environ.get("AZURE_FUNCTION_URL"),
-    function_key=os.environ.get("AZURE_FUNCTION_KEY"),
-    mcp_client=MCP_CLIENT
-)
+try:
+    BOT = SQLAssistantBot(
+        conversation_state=CONVERSATION_STATE,
+        user_state=USER_STATE,
+        sql_translator=SQL_TRANSLATOR,
+        function_url=os.environ.get("AZURE_FUNCTION_URL", ""),
+        function_key=os.environ.get("AZURE_FUNCTION_KEY", ""),
+        mcp_client=None  # Disabled for now
+    )
+    logger.info("✓ SQLAssistantBot initialized successfully")
+except Exception as e:
+    logger.error(f"❌ Failed to initialize SQLAssistantBot: {e}")
+    logger.warning("Using fallback bot")
+    
+    class FallbackBot:
+        async def on_turn(self, turn_context: TurnContext):
+            if turn_context.activity.type == "message":
+                await turn_context.send_activity(
+                    MessageFactory.text(
+                        f"🤖 SQL Assistant Bot is running but in limited mode.\n\n"
+                        f"Missing environment variables: {', '.join(missing_vars) if missing_vars else 'None'}\n\n"
+                        f"Please check your Azure App Service configuration."
+                    )
+                )
+    
+    BOT = FallbackBot()
 
 # Define the main messaging endpoint
 async def messages(req: Request) -> Response:
     """Handle incoming messages from Teams"""
-    PERF_TRACKER.record_request()
-    
     try:
+        logger.info(f"Received message request: {req.method} {req.path}")
+        
         # Validate content type
-        if "application/json" not in req.headers.get("Content-Type", ""):
-            PERF_TRACKER.record_error()
+        content_type = req.headers.get("Content-Type", "")
+        if "application/json" not in content_type:
+            logger.error(f"Invalid content type: {content_type}")
             return Response(status=415, text="Unsupported Media Type")
         
         # Parse request body
-        body = await req.json()
-        activity = Activity().deserialize(body)
+        try:
+            body = await req.json()
+            logger.info(f"Request body type: {body.get('type', 'unknown')}")
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in request: {e}")
+            return Response(status=400, text="Invalid JSON")
         
-        # Track message
-        if activity.type == "message":
-            PERF_TRACKER.record_message()
+        activity = Activity().deserialize(body)
         
         # Get auth header
         auth_header = req.headers.get("Authorization", "")
@@ -205,70 +236,58 @@ async def messages(req: Request) -> Response:
         # Process activity
         await ADAPTER.process_activity(activity, auth_header, BOT.on_turn)
         
+        logger.info("Message processed successfully")
         return Response(status=200)
         
-    except json.JSONDecodeError:
-        logger.error("Invalid JSON in request")
-        PERF_TRACKER.record_error()
-        return Response(status=400, text="Invalid JSON")
     except Exception as e:
-        logger.error(f"Error processing activity: {e}", exc_info=True)
-        PERF_TRACKER.record_error()
-        return Response(status=500, text="Internal Server Error")
+        logger.error(f"Error processing message: {e}", exc_info=True)
+        return Response(status=500, text=f"Internal Server Error: {str(e)}")
 
 # Health check endpoint with detailed status
 async def health(req: Request) -> Response:
-    """Health check endpoint with detailed status"""
+    """Comprehensive health check endpoint"""
     try:
         health_status = {
             "status": "healthy",
-            "version": "2.0.0",
+            "version": "1.0.0",
             "timestamp": datetime.now().isoformat(),
             "environment": DEPLOYMENT_ENV,
+            "python_version": os.sys.version,
+            "working_directory": os.getcwd(),
             "services": {
                 "bot": "running",
-                "openai": "configured" if os.environ.get("AZURE_OPENAI_ENDPOINT") else "not configured",
+                "adapter": "configured",
+                "openai": "configured" if SQL_TRANSLATOR else "error",
                 "sql_function": "configured" if os.environ.get("AZURE_FUNCTION_URL") else "not configured",
-                "mcp": "configured" if MCP_CLIENT else "not configured",
-                "mcp_connected": MCP_CLIENT.connected if MCP_CLIENT else False,
-                "memory_state": "active",
-                "conversation_state": "active"
+                "mcp": "disabled",
+                "admin_dashboard": "available" if ADMIN_DASHBOARD_AVAILABLE else "not available"
             },
-            "features": {
-                "autonomous_mode": os.environ.get("ENABLE_AUTONOMOUS_MODE", "true") == "true",
-                "pattern_learning": MCP_CLIENT is not None,
-                "explanation_mode": os.environ.get("ENABLE_EXPLANATION_MODE", "true") == "true",
-                "export": os.environ.get("ENABLE_EXPORT", "true") == "true",
-                "tiered_caching": MCP_CLIENT is not None
-            },
-            "performance": PERF_TRACKER.get_stats()
+            "environment_check": {
+                "missing_variables": missing_vars,
+                "has_critical_vars": len(missing_vars) == 0
+            }
         }
         
-        # Test Azure Function connectivity if configured
+        # Test Azure Function if configured
         if os.environ.get("AZURE_FUNCTION_URL"):
             try:
                 import aiohttp
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        os.environ.get("AZURE_FUNCTION_URL").replace("/query", "/health"),
-                        headers={"x-functions-key": os.environ.get("AZURE_FUNCTION_KEY")},
+                    headers = {}
+                    if os.environ.get("AZURE_FUNCTION_KEY"):
+                        headers["x-functions-key"] = os.environ.get("AZURE_FUNCTION_KEY")
+                    
+                    async with session.post(
+                        os.environ.get("AZURE_FUNCTION_URL"),
+                        json={"query_type": "metadata"},
+                        headers=headers,
                         timeout=aiohttp.ClientTimeout(total=5)
                     ) as response:
+                        health_status["services"]["sql_function_status"] = response.status
                         health_status["services"]["sql_function_reachable"] = response.status == 200
-            except:
+            except Exception as e:
+                health_status["services"]["sql_function_error"] = str(e)
                 health_status["services"]["sql_function_reachable"] = False
-        
-        # Test MCP connectivity if configured
-        if MCP_CLIENT and MCP_CLIENT.connected:
-            try:
-                cache_stats = await MCP_CLIENT.get_cache_statistics()
-                health_status["services"]["mcp_responsive"] = True
-                health_status["mcp_stats"] = {
-                    "cache_hit_rate": cache_stats.get("cache", {}).get("hit_rate", 0),
-                    "pattern_count": cache_stats.get("pattern_stats", {}).get("total_patterns", 0)
-                }
-            except:
-                health_status["services"]["mcp_responsive"] = False
         
         return json_response(health_status)
         
@@ -280,163 +299,106 @@ async def health(req: Request) -> Response:
             "timestamp": datetime.now().isoformat()
         }, status=503)
 
-# Metrics endpoint for monitoring
-async def metrics(req: Request) -> Response:
-    """Metrics endpoint for monitoring (Prometheus format)"""
-    try:
-        stats = PERF_TRACKER.get_stats()
-        
-        # Format metrics in Prometheus format
-        metrics_text = f"""# HELP sqlbot_uptime_seconds Time since bot started
-# TYPE sqlbot_uptime_seconds counter
-sqlbot_uptime_seconds {stats['uptime_seconds']}
+# Simple test endpoint
+async def test(req: Request) -> Response:
+    """Simple test endpoint"""
+    return json_response({
+        "message": "SQL Assistant Bot is running!",
+        "timestamp": datetime.now().isoformat(),
+        "environment": DEPLOYMENT_ENV,
+        "admin_dashboard": f"Available at https://{req.host}/admin" if ADMIN_DASHBOARD_AVAILABLE else "Not available"
+    })
 
-# HELP sqlbot_requests_total Total number of requests
-# TYPE sqlbot_requests_total counter
-sqlbot_requests_total {stats['request_count']}
-
-# HELP sqlbot_errors_total Total number of errors
-# TYPE sqlbot_errors_total counter
-sqlbot_errors_total {stats['error_count']}
-
-# HELP sqlbot_messages_total Total number of messages processed
-# TYPE sqlbot_messages_total counter
-sqlbot_messages_total {stats['message_count']}
-
-# HELP sqlbot_queries_total Total number of SQL queries executed
-# TYPE sqlbot_queries_total counter
-sqlbot_queries_total {stats['query_count']}
-
-# HELP sqlbot_pattern_hits_total Total number of pattern cache hits
-# TYPE sqlbot_pattern_hits_total counter
-sqlbot_pattern_hits_total {stats['pattern_hits']}
-
-# HELP sqlbot_pattern_hit_rate Pattern cache hit rate percentage
-# TYPE sqlbot_pattern_hit_rate gauge
-sqlbot_pattern_hit_rate {stats['pattern_hit_rate']}
-
-# HELP sqlbot_error_rate Error rate percentage
-# TYPE sqlbot_error_rate gauge
-sqlbot_error_rate {stats['error_rate']}
-
-# HELP sqlbot_conversations_active Active conversations
-# TYPE sqlbot_conversations_active gauge
-sqlbot_conversations_active {len(CONVERSATION_STATE._storage._memory)}
-
-# HELP sqlbot_users_active Active users
-# TYPE sqlbot_users_active gauge
-sqlbot_users_active {len(USER_STATE._storage._memory)}
-"""
-        
-        return Response(text=metrics_text, content_type="text/plain")
-        
-    except Exception as e:
-        logger.error(f"Metrics endpoint failed: {e}")
-        return Response(status=500, text=f"Error generating metrics: {str(e)}")
-
-# Ready check endpoint for Kubernetes
-async def ready(req: Request) -> Response:
-    """Readiness probe endpoint"""
-    # Check if all services are ready
-    ready_checks = {
-        "bot": True,
-        "openai": bool(SQL_TRANSLATOR),
-        "function": bool(os.environ.get("AZURE_FUNCTION_URL")),
-        "mcp": MCP_CLIENT.connected if MCP_CLIENT else True  # Optional service
-    }
-    
-    if all(ready_checks.values()):
-        return json_response({"ready": True, "checks": ready_checks})
+# Admin dashboard info endpoint
+async def admin_info(req: Request) -> Response:
+    """Information about admin dashboard"""
+    if ADMIN_DASHBOARD_AVAILABLE:
+        return json_response({
+            "available": True,
+            "url": f"https://{req.host}/admin",
+            "message": "Admin dashboard is available",
+            "features": [
+                "Real-time system monitoring",
+                "Component health testing", 
+                "Environment configuration display",
+                "Performance metrics",
+                "Live activity logs",
+                "Automated testing suite"
+            ]
+        })
     else:
-        return json_response({"ready": False, "checks": ready_checks}, status=503)
-
-# Live check endpoint for Kubernetes
-async def live(req: Request) -> Response:
-    """Liveness probe endpoint"""
-    return json_response({"alive": True, "timestamp": datetime.now().isoformat()})
+        return json_response({
+            "available": False,
+            "message": "Admin dashboard module not found",
+            "solution": "Deploy admin_dashboard.py with your bot"
+        })
 
 # Create the application
 APP = web.Application(middlewares=[aiohttp_error_middleware])
 
-# Add routes
+# Add main bot routes
 APP.router.add_post("/api/messages", messages)
 APP.router.add_get("/health", health)
-APP.router.add_get("/health/ready", ready)
-APP.router.add_get("/health/live", live)
-APP.router.add_get("/metrics", metrics)
+APP.router.add_get("/test", test)
+APP.router.add_get("/", health)  # Default route
+APP.router.add_get("/admin-info", admin_info)
+
+# Add admin dashboard routes if available
+if ADMIN_DASHBOARD_AVAILABLE:
+    try:
+        dashboard = add_admin_routes(APP, SQL_TRANSLATOR, BOT)
+        logger.info("✓ Admin dashboard routes added")
+        logger.info("📊 Admin dashboard will be available at /admin")
+    except Exception as e:
+        logger.error(f"❌ Failed to add admin dashboard routes: {e}")
+        ADMIN_DASHBOARD_AVAILABLE = False
 
 # Startup tasks
 async def on_startup(app):
     """Perform startup tasks"""
-    logger.info("SQL Assistant Bot starting up...")
+    logger.info("=== SQL Assistant Bot Startup ===")
     logger.info(f"Environment: {DEPLOYMENT_ENV}")
     logger.info(f"Bot App ID: {os.environ.get('MICROSOFT_APP_ID', 'Not set')[:8]}...")
-    logger.info(f"Features enabled:")
-    logger.info(f"  - Autonomous Mode: {os.environ.get('ENABLE_AUTONOMOUS_MODE', 'true')}")
-    logger.info(f"  - Pattern Learning: {MCP_CLIENT is not None}")
-    logger.info(f"  - Explanation Mode: {os.environ.get('ENABLE_EXPLANATION_MODE', 'true')}")
-    logger.info(f"  - Export: {os.environ.get('ENABLE_EXPORT', 'true')}")
     
-    # Initialize MCP connection if available
-    if MCP_CLIENT:
+    if missing_vars:
+        logger.warning(f"⚠️ Missing environment variables: {', '.join(missing_vars)}")
+        logger.warning("Bot will run with limited functionality")
+    else:
+        logger.info("✓ All required environment variables are set")
+    
+    # Create necessary directories
+    dirs = ['.pattern_cache', '.exploration_exports', '.query_logs', '.token_usage', 'logs']
+    for dir_name in dirs:
         try:
-            await MCP_CLIENT.connect()
-            if MCP_CLIENT.connected:
-                logger.info("✅ Connected to MCP server")
-                
-                # Log initial cache stats
-                try:
-                    stats = await MCP_CLIENT.get_cache_statistics()
-                    logger.info(f"MCP Cache Stats: Hit rate {stats.get('cache', {}).get('hit_rate', 0):.1f}%")
-                    logger.info(f"MCP Patterns: {stats.get('pattern_stats', {}).get('total_patterns', 0)} patterns learned")
-                except:
-                    pass
-            else:
-                logger.warning("⚠️  MCP server not responding - running without pattern learning")
+            os.makedirs(dir_name, exist_ok=True)
+            logger.info(f"✓ Created directory: {dir_name}")
         except Exception as e:
-            logger.error(f"Failed to connect to MCP server: {e}")
-            logger.warning("Bot will run without MCP features")
+            logger.warning(f"Failed to create directory {dir_name}: {e}")
     
-    # Create cache directories
-    from pathlib import Path
-    cache_dirs = [
-        Path(os.environ.get("PATTERN_CACHE_DIR", ".pattern_cache")),
-        Path(os.environ.get("EXPORT_DIR", ".exploration_exports")),
-        Path(os.environ.get("QUERY_LOG_DIR", ".query_logs"))
-    ]
+    # Log available endpoints
+    logger.info("📍 Available endpoints:")
+    logger.info("  - /health (health check)")
+    logger.info("  - /test (simple test)")
+    logger.info("  - /api/messages (bot messaging)")
+    if ADMIN_DASHBOARD_AVAILABLE:
+        logger.info("  - /admin (admin dashboard) 🎉")
+        logger.info("  - /admin-info (dashboard info)")
+    else:
+        logger.warning("  - /admin (not available - deploy admin_dashboard.py)")
     
-    for cache_dir in cache_dirs:
-        cache_dir.mkdir(exist_ok=True)
-        logger.info(f"Created cache directory: {cache_dir}")
-    
-    logger.info("SQL Assistant Bot ready!")
-    logger.info(f"Listening on port {os.environ.get('PORT', 3978)}")
+    logger.info("=== Bot startup completed ===")
 
 # Cleanup tasks
 async def on_cleanup(app):
     """Perform cleanup tasks"""
     logger.info("SQL Assistant Bot shutting down...")
     
-    # Log final statistics
-    final_stats = PERF_TRACKER.get_stats()
-    logger.info(f"Final statistics:")
-    logger.info(f"  - Total requests: {final_stats['request_count']}")
-    logger.info(f"  - Total queries: {final_stats['query_count']}")
-    logger.info(f"  - Pattern hit rate: {final_stats['pattern_hit_rate']:.1f}%")
-    logger.info(f"  - Error rate: {final_stats['error_rate']:.1f}%")
-    logger.info(f"  - Uptime: {final_stats['uptime_hours']:.1f} hours")
-    
-    # Close MCP connection if available
-    if MCP_CLIENT:
-        try:
-            await MCP_CLIENT.close()
-            logger.info("Closed MCP connection")
-        except Exception as e:
-            logger.error(f"Error closing MCP connection: {e}")
-    
-    # Clear state
-    CONVERSATION_STATE._storage._memory.clear()
-    USER_STATE._storage._memory.clear()
+    try:
+        CONVERSATION_STATE._storage._memory.clear()
+        USER_STATE._storage._memory.clear()
+        logger.info("✓ Cleared bot state")
+    except Exception as e:
+        logger.error(f"Error during cleanup: {e}")
     
     logger.info("SQL Assistant Bot shutdown complete")
 
@@ -447,12 +409,12 @@ APP.on_cleanup.append(on_cleanup)
 # Main entry point
 if __name__ == "__main__":
     try:
-        # Get port from environment or default
-        PORT = int(os.environ.get("PORT", 3978))
-        
+        PORT = int(os.environ.get("PORT", 8000))
         logger.info(f"Starting bot on port {PORT}")
         
-        # Run the app
+        if ADMIN_DASHBOARD_AVAILABLE:
+            logger.info(f"🎉 Admin dashboard will be available at: http://localhost:{PORT}/admin")
+        
         web.run_app(
             APP,
             host="0.0.0.0",
@@ -460,5 +422,7 @@ if __name__ == "__main__":
             access_log_format='%a %t "%r" %s %b "%{Referer}i" "%{User-Agent}i" %Tf'
         )
     except Exception as e:
-        logger.error(f"Failed to start bot: {e}")
+        logger.error(f"Failed to start bot: {e}", exc_info=True)
         raise
+
+logger.info("App module loaded successfully")
