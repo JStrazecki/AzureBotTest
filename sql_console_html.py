@@ -1,13 +1,13 @@
 # sql_console_html.py - SQL Console HTML Generation
 """
-SQL Console HTML - Combined UI components to generate full HTML
+SQL Console HTML - Combined UI components to generate full HTML with multi-database query support
 """
 
 from sql_console_ui import get_sql_console_css
 from sql_console_javascript import get_sql_console_javascript
 
 def get_sql_console_html():
-    """Generate the complete SQL console HTML"""
+    """Generate the complete SQL console HTML with multi-database query support"""
     return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -25,6 +25,10 @@ def get_sql_console_html():
             <div class="sidebar-header">
                 <div class="sidebar-title">SQL Explorer</div>
                 <div class="current-db">Current: <span id="currentDatabase">master</span></div>
+                <div class="user-info">
+                    <div class="user-label">Logged in as:</div>
+                    <div class="user-name" id="currentUser">Loading...</div>
+                </div>
             </div>
             
             <div class="database-section">
@@ -32,8 +36,25 @@ def get_sql_console_html():
                     <div class="section-title">Databases</div>
                     <button class="refresh-button" onclick="refreshDatabases()">Refresh</button>
                 </div>
+                
+                <!-- Multi-database query toggle -->
+                <div class="multi-db-toggle">
+                    <label class="toggle-container">
+                        <input type="checkbox" id="multiDbMode" onchange="toggleMultiDbMode()">
+                        <span class="toggle-label">Multi-Database Query</span>
+                    </label>
+                    <button id="selectAllDbBtn" class="select-all-btn" style="display: none;" onclick="toggleAllDatabases()">
+                        Select All
+                    </button>
+                </div>
+                
                 <div class="database-list" id="databaseList">
                     <div class="loading-indicator">Loading databases...</div>
+                </div>
+                
+                <!-- Selected databases indicator -->
+                <div id="selectedDbIndicator" class="selected-db-indicator" style="display: none;">
+                    <div class="selected-count">0 databases selected</div>
                 </div>
             </div>
             
@@ -55,6 +76,7 @@ def get_sql_console_html():
                     <div class="quick-actions">
                         <button class="quick-action" onclick="quickCommand('SELECT TOP 10 * FROM ')">Select Top 10</button>
                         <button class="quick-action" onclick="quickCommand('SHOW TABLES')">Show Tables</button>
+                        <button class="quick-action" onclick="quickCommand('sp_databases')">List All DBs</button>
                         <button class="quick-action" onclick="quickCommand('help')">Help</button>
                         <a href="/admin" class="quick-action" style="text-decoration: none;">Admin</a>
                     </div>
@@ -75,12 +97,23 @@ Try commands like:
 • "Find the top 10 customers by order count"
 • Direct SQL queries: SELECT, WITH, etc.
 
+<strong>New: Multi-Database Queries!</strong>
+• Toggle "Multi-Database Query" mode in the sidebar
+• Select multiple databases to query across them
+• Results will be grouped by database
+
 Type 'help' for more information.</div>
                         </div>
                     </div>
                 </div>
 
                 <div class="input-area">
+                    <!-- Multi-database indicator -->
+                    <div id="multiDbIndicator" class="multi-db-indicator" style="display: none;">
+                        <span class="indicator-icon">🗄️</span>
+                        <span class="indicator-text">Multi-database mode: <span id="selectedDbCount">0</span> databases selected</span>
+                    </div>
+                    
                     <div class="input-container">
                         <div class="input-wrapper">
                             <textarea 
