@@ -1,20 +1,20 @@
-# sql_console_javascript.py - SQL Console JavaScript
+# sql_console_javascript.py - SQL Console JavaScript with Enhanced Logging
 """
-SQL Console JavaScript - Separated for easier management with multi-database support
+SQL Console JavaScript - Enhanced with step-by-step logging and cancel functionality
 """
 
 def get_sql_console_javascript():
-    """Return the JavaScript code for the SQL console with multi-database support"""
+    """Return the JavaScript code for the SQL console with enhanced logging"""
     return '''
     let currentDatabase = 'master';
     let isProcessing = false;
     let sessionId = generateSessionId();
     let multiDbMode = false;
     let selectedDatabases = new Set();
+    let currentRequest = null;
 
     // Initialize
     window.onload = async function() {
-        await refreshDatabases();
         await getCurrentUser();
         document.getElementById('messageInput').focus();
         
@@ -24,6 +24,13 @@ def get_sql_console_javascript():
             this.style.height = 'auto';
             this.style.height = this.scrollHeight + 'px';
         });
+        
+        // Add initial log message
+        addLogMessage('System initialized. Ready for queries.', 'success');
+        addLogMessage('Available databases: master, _support, demo', 'info');
+        
+        // Don't auto-refresh databases - wait for user action
+        await loadInitialDatabases();
     };
 
     function generateSessionId() {
@@ -46,6 +53,35 @@ def get_sql_console_javascript():
     function quickCommand(command) {
         document.getElementById('messageInput').value = command;
         sendMessage();
+    }
+
+    async function loadInitialDatabases() {
+        const databaseList = document.getElementById('databaseList');
+        databaseList.innerHTML = '';
+        
+        // Load known accessible databases without making API call
+        const knownDatabases = ['master', '_support', 'demo'];
+        
+        knownDatabases.forEach(db => {
+            const dbItem = document.createElement('div');
+            dbItem.className = 'database-item';
+            dbItem.setAttribute('data-db-name', db);
+            
+            if (db === currentDatabase) {
+                dbItem.classList.add('active');
+            }
+            
+            dbItem.textContent = db;
+            dbItem.onclick = () => {
+                if (!multiDbMode) {
+                    selectDatabase(db);
+                }
+            };
+            
+            databaseList.appendChild(dbItem);
+        });
+        
+        addLogMessage('Loaded known accessible databases', 'info');
     }
 
     function toggleMultiDbMode() {
@@ -84,6 +120,8 @@ def get_sql_console_javascript():
             selectedDatabases.clear();
             updateSelectedDatabasesUI();
         }
+        
+        addLogMessage(multiDbMode ? 'Multi-database mode enabled' : 'Multi-database mode disabled', 'info');
     }
 
     function toggleDatabaseSelection(dbName) {
@@ -136,6 +174,34 @@ def get_sql_console_javascript():
         });
     }
 
+    function addLogMessage(message, type = 'info') {
+        const messagesContainer = document.getElementById('messagesContainer');
+        const logDiv = document.createElement('div');
+        logDiv.className = 'message bot log-message';
+        
+        const time = new Date().toLocaleTimeString();
+        
+        let icon = '';
+        let color = '';
+        switch(type) {
+            case 'info': icon = 'ℹ️'; color = '#3b82f6'; break;
+            case 'success': icon = '✅'; color = '#10b981'; break;
+            case 'warning': icon = '⚠️'; color = '#f59e0b'; break;
+            case 'error': icon = '❌'; color = '#ef4444'; break;
+            case 'debug': icon = '🔍'; color = '#6b7280'; break;
+        }
+        
+        logDiv.innerHTML = `
+            <div class="message-content" style="background-color: rgba(30, 41, 59, 0.5); border-color: ${color};">
+                <div class="message-header" style="color: ${color};">${icon} System Log • ${time}</div>
+                <div class="message-text" style="color: #cbd5e1; font-size: 0.875rem;">${escapeHtml(message)}</div>
+            </div>
+        `;
+        
+        messagesContainer.appendChild(logDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
     async function sendMessage() {
         const input = document.getElementById('messageInput');
         const message = input.value.trim();
@@ -144,6 +210,11 @@ def get_sql_console_javascript():
         
         isProcessing = true;
         document.getElementById('sendButton').disabled = true;
+        document.getElementById('sendButton').innerHTML = '<span class="spinner"></span> Processing...';
+        
+        // Show cancel button
+        const cancelBtn = document.getElementById('cancelButton');
+        if (cancelBtn) cancelBtn.style.display = 'inline-block';
         
         // Add user message
         addMessage(message, 'user');
@@ -152,6 +223,9 @@ def get_sql_console_javascript():
         
         // Show typing indicator
         showTypingIndicator();
+        
+        // Log the start of processing
+        addLogMessage(`Processing query: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"`, 'info');
         
         try {
             // Prepare request data
@@ -165,9 +239,12 @@ def get_sql_console_javascript():
             if (multiDbMode && selectedDatabases.size > 0) {
                 requestData.multi_db_mode = true;
                 requestData.databases = Array.from(selectedDatabases);
+                addLogMessage(`Multi-database query: ${requestData.databases.join(', ')}`, 'info');
             }
             
-            const response = await fetch('/console/api/message', {
+            addLogMessage('Sending request to server...', 'debug');
+            
+            currentRequest = fetch('/console/api/message', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -175,21 +252,37 @@ def get_sql_console_javascript():
                 body: JSON.stringify(requestData)
             });
             
+            const response = await currentRequest;
+            
+            addLogMessage(`Server response received: ${response.status} ${response.statusText}`, 'debug');
+            
             const result = await response.json();
             
             hideTypingIndicator();
             
             if (result.status === 'success') {
+                addLogMessage('Query processed successfully', 'success');
+                
                 // Add bot response
                 if (result.response_type === 'sql_result') {
+                    if (result.sql_query) {
+                        addLogMessage(`SQL Query executed: ${result.sql_query}`, 'info');
+                    }
+                    
                     if (result.multi_db_results) {
+                        const successCount = result.multi_db_results.filter(r => !r.error).length;
+                        addLogMessage(`Multi-DB results: ${successCount}/${result.multi_db_results.length} successful`, 'info');
                         addMultiDbSQLResult(result);
                     } else {
+                        if (result.row_count !== undefined) {
+                            addLogMessage(`Query returned ${result.row_count} rows in ${result.execution_time}ms`, 'success');
+                        }
                         addSQLResult(result);
                     }
                 } else if (result.response_type === 'help') {
                     addMessage(result.content, 'bot');
                 } else if (result.response_type === 'error') {
+                    addLogMessage(`Error: ${result.error}`, 'error');
                     addErrorMessage(result.error);
                 } else {
                     addMessage(result.content, 'bot');
@@ -202,18 +295,57 @@ def get_sql_console_javascript():
                 
                 // Refresh tables if needed
                 if (result.refresh_tables) {
+                    addLogMessage('Refreshing table list...', 'info');
                     await loadTables(currentDatabase);
                 }
             } else {
-                addErrorMessage(result.error || 'An error occurred');
+                const errorMsg = result.error || 'An error occurred';
+                addLogMessage(`Error: ${errorMsg}`, 'error');
+                addErrorMessage(errorMsg);
             }
         } catch (error) {
             hideTypingIndicator();
-            addErrorMessage('Connection error: ' + error.message);
+            if (error.name === 'AbortError') {
+                addLogMessage('Request cancelled by user', 'warning');
+                addErrorMessage('Request cancelled');
+            } else {
+                addLogMessage(`Connection error: ${error.message}`, 'error');
+                addErrorMessage('Connection error: ' + error.message);
+            }
         } finally {
             isProcessing = false;
             document.getElementById('sendButton').disabled = false;
+            document.getElementById('sendButton').innerHTML = 'Send';
+            
+            // Hide cancel button
+            const cancelBtn = document.getElementById('cancelButton');
+            if (cancelBtn) cancelBtn.style.display = 'none';
+            
+            currentRequest = null;
             input.focus();
+        }
+    }
+
+    async function cancelRequest() {
+        if (currentRequest) {
+            addLogMessage('Cancelling request...', 'warning');
+            
+            try {
+                // Send cancel request to server
+                await fetch('/console/api/cancel', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ session_id: sessionId })
+                });
+            } catch (e) {
+                console.error('Error sending cancel request:', e);
+            }
+            
+            // Note: Fetch API doesn't support true cancellation
+            // This is a placeholder for future WebSocket implementation
+            addLogMessage('Cancel request sent to server', 'warning');
         }
     }
 
@@ -410,12 +542,16 @@ def get_sql_console_javascript():
         const databaseList = document.getElementById('databaseList');
         databaseList.innerHTML = '<div class="loading-indicator">Loading databases...</div>';
         
+        addLogMessage('Refreshing database list...', 'info');
+        
         try {
             const response = await fetch('/console/api/databases');
             const result = await response.json();
             
             if (result.status === 'success' && result.databases) {
                 databaseList.innerHTML = '';
+                
+                addLogMessage(`Found ${result.databases.length} accessible databases`, 'success');
                 
                 result.databases.forEach(db => {
                     const dbItem = document.createElement('div');
@@ -443,12 +579,19 @@ def get_sql_console_javascript():
                 
                 if (result.databases.length === 0) {
                     databaseList.innerHTML = '<div style="color: #666; font-size: 0.85rem;">No databases found</div>';
+                    addLogMessage('No accessible databases found', 'warning');
+                }
+                
+                if (result.note) {
+                    addLogMessage(result.note, 'info');
                 }
             } else {
                 databaseList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Error loading databases</div>';
+                addLogMessage('Error loading databases', 'error');
             }
         } catch (error) {
             databaseList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Connection error</div>';
+            addLogMessage(`Connection error: ${error.message}`, 'error');
         }
     }
 
@@ -469,6 +612,7 @@ def get_sql_console_javascript():
         
         // Add notification
         addMessage(`Database changed to: ${dbName}`, 'bot');
+        addLogMessage(`Switched to database: ${dbName}`, 'info');
     }
 
     async function loadTables(database) {
@@ -477,8 +621,10 @@ def get_sql_console_javascript():
         const tableList = document.getElementById('tableList');
         tableList.innerHTML = '<div class="loading-indicator">Loading tables...</div>';
         
+        addLogMessage(`Loading tables for database: ${database}`, 'info');
+        
         try {
-            const response = await fetch(`/console/api/tables?database=${encodeURIComponent(database)}`);
+            const response = await fetch(`/console/api/tables?database=${encodeURIComponent(database)}&session_id=${sessionId}`);
             const result = await response.json();
             
             if (result.status === 'success' && result.tables) {
@@ -486,22 +632,28 @@ def get_sql_console_javascript():
                 
                 if (result.tables.length === 0) {
                     tableList.innerHTML = '<div style="color: #666; font-size: 0.85rem;">No tables found</div>';
+                    addLogMessage(`No tables found in ${database}`, 'warning');
                 } else {
+                    addLogMessage(`Found ${result.tables.length} tables in ${database}`, 'success');
+                    
                     result.tables.forEach(table => {
                         const tableItem = document.createElement('div');
                         tableItem.className = 'table-item';
                         tableItem.textContent = table;
                         tableItem.onclick = () => {
                             document.getElementById('messageInput').value = `SELECT TOP 10 * FROM ${table}`;
+                            addLogMessage(`Query template created for table: ${table}`, 'info');
                         };
                         tableList.appendChild(tableItem);
                     });
                 }
             } else {
                 tableList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Error loading tables</div>';
+                addLogMessage(`Error loading tables: ${result.error || 'Unknown error'}`, 'error');
             }
         } catch (error) {
             tableList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Connection error</div>';
+            addLogMessage(`Connection error loading tables: ${error.message}`, 'error');
         }
     }
 
@@ -516,15 +668,19 @@ def get_sql_console_javascript():
                 userElement.textContent = result.user.name || result.user.email || 'Unknown User';
                 
                 // Add title attribute for full details
-                if (result.user.email) {
-                    userElement.title = `Email: ${result.user.email}\nAuth: ${result.user.auth_type || 'Microsoft'}`;
+                if (result.user.sql_user) {
+                    userElement.title = `SQL User: ${result.user.sql_user}\\nAuth: ${result.user.auth_type || 'Microsoft'}`;
                 }
+                
+                addLogMessage(`Logged in as: ${result.user.name || result.user.sql_user}`, 'info');
             } else {
                 document.getElementById('currentUser').textContent = 'Not authenticated';
+                addLogMessage('User authentication status: Not authenticated', 'warning');
             }
         } catch (error) {
             console.error('Error getting current user:', error);
             document.getElementById('currentUser').textContent = 'Authentication error';
+            addLogMessage('Error checking authentication status', 'error');
         }
     }
    

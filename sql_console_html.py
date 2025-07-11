@@ -1,13 +1,13 @@
-# sql_console_html.py - SQL Console HTML Generation
+# sql_console_html.py - SQL Console HTML Generation with Cancel Button
 """
-SQL Console HTML - Combined UI components to generate full HTML with multi-database query support
+SQL Console HTML - Enhanced with cancel button and better UI
 """
 
 from sql_console_ui import get_sql_console_css
 from sql_console_javascript import get_sql_console_javascript
 
 def get_sql_console_html():
-    """Generate the complete SQL console HTML with multi-database query support"""
+    """Generate the complete SQL console HTML with cancel button"""
     return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,6 +16,44 @@ def get_sql_console_html():
     <title>SQL Assistant Console</title>
     <style>
         {get_sql_console_css()}
+        
+        /* Additional styles for cancel button and spinner */
+        .cancel-button {{
+            display: none;
+            padding: 0.75rem 1.5rem;
+            background-color: #ef4444;
+            color: white;
+            border: none;
+            border-radius: 0.5rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.875rem;
+        }}
+        
+        .cancel-button:hover {{
+            background-color: #dc2626;
+        }}
+        
+        .spinner {{
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }}
+        
+        @keyframes spin {{
+            to {{ transform: rotate(360deg); }}
+        }}
+        
+        /* Log message styles */
+        .log-message .message-content {{
+            border-left: 3px solid;
+            background-color: rgba(30, 41, 59, 0.5) !important;
+        }}
     </style>
 </head>
 <body>
@@ -33,7 +71,7 @@ def get_sql_console_html():
             
             <div class="database-section">
                 <div class="section-header">
-                    <div class="section-title">Databases</div>
+                    <div class="section-title">Databases (MSI Access)</div>
                     <button class="refresh-button" onclick="refreshDatabases()">Refresh</button>
                 </div>
                 
@@ -49,7 +87,7 @@ def get_sql_console_html():
                 </div>
                 
                 <div class="database-list" id="databaseList">
-                    <div class="loading-indicator">Loading databases...</div>
+                    <!-- Will be populated with known databases -->
                 </div>
                 
                 <!-- Selected databases indicator -->
@@ -91,18 +129,25 @@ def get_sql_console_html():
                             <div class="message-header">SQL Assistant</div>
                             <div class="message-text">Welcome to SQL Assistant Console! I can help you explore databases and write SQL queries.
 
+<strong>Available Databases (MSI Access):</strong>
+• master - System metadata
+• _support - Support database  
+• demo - Demo database
+
 Try commands like:
 • "Show me all tables"
 • "What columns does the users table have?"
 • "Find the top 10 customers by order count"
 • Direct SQL queries: SELECT, WITH, etc.
 
-<strong>New: Multi-Database Queries!</strong>
+<strong>Multi-Database Queries:</strong>
 • Toggle "Multi-Database Query" mode in the sidebar
 • Select multiple databases to query across them
 • Results will be grouped by database
 
-Type 'help' for more information.</div>
+Type 'help' for more information.
+
+<strong>Note:</strong> The console now shows detailed processing steps for better visibility.</div>
                         </div>
                     </div>
                 </div>
@@ -125,6 +170,9 @@ Type 'help' for more information.</div>
                         </div>
                         <button id="sendButton" class="send-button" onclick="sendMessage()">
                             Send
+                        </button>
+                        <button id="cancelButton" class="cancel-button" onclick="cancelRequest()">
+                            Cancel
                         </button>
                     </div>
                 </div>
