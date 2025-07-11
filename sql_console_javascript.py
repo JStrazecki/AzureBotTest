@@ -1,21 +1,18 @@
 # sql_console_javascript.py - SQL Console JavaScript
 """
-SQL Console JavaScript - Separated for easier management with multi-database support
+SQL Console JavaScript - Separated for easier management
 """
 
 def get_sql_console_javascript():
-    """Return the JavaScript code for the SQL console with multi-database support"""
+    """Return the JavaScript code for the SQL console"""
     return '''
     let currentDatabase = 'master';
     let isProcessing = false;
     let sessionId = generateSessionId();
-    let multiDbMode = false;
-    let selectedDatabases = new Set();
 
     // Initialize
     window.onload = async function() {
         await refreshDatabases();
-        await getCurrentUser();
         document.getElementById('messageInput').focus();
         
         // Auto-resize textarea
@@ -48,94 +45,6 @@ def get_sql_console_javascript():
         sendMessage();
     }
 
-    function toggleMultiDbMode() {
-        multiDbMode = document.getElementById('multiDbMode').checked;
-        
-        // Show/hide multi-db UI elements
-        document.getElementById('selectAllDbBtn').style.display = multiDbMode ? 'block' : 'none';
-        document.getElementById('selectedDbIndicator').style.display = multiDbMode ? 'block' : 'none';
-        document.getElementById('multiDbIndicator').style.display = multiDbMode ? 'block' : 'none';
-        
-        // Update database items
-        const dbItems = document.querySelectorAll('.database-item');
-        dbItems.forEach(item => {
-            if (multiDbMode) {
-                item.classList.add('multi-select-mode');
-                
-                // Add checkbox if not exists
-                if (!item.querySelector('.database-checkbox')) {
-                    const checkbox = document.createElement('input');
-                    checkbox.type = 'checkbox';
-                    checkbox.className = 'database-checkbox';
-                    checkbox.onclick = (e) => {
-                        e.stopPropagation();
-                        toggleDatabaseSelection(item.getAttribute('data-db-name'));
-                    };
-                    item.insertBefore(checkbox, item.firstChild);
-                }
-            } else {
-                item.classList.remove('multi-select-mode');
-                const checkbox = item.querySelector('.database-checkbox');
-                if (checkbox) checkbox.remove();
-            }
-        });
-        
-        if (!multiDbMode) {
-            selectedDatabases.clear();
-            updateSelectedDatabasesUI();
-        }
-    }
-
-    function toggleDatabaseSelection(dbName) {
-        if (selectedDatabases.has(dbName)) {
-            selectedDatabases.delete(dbName);
-        } else {
-            selectedDatabases.add(dbName);
-        }
-        updateSelectedDatabasesUI();
-    }
-
-    function toggleAllDatabases() {
-        const dbItems = document.querySelectorAll('.database-item');
-        const allSelected = selectedDatabases.size === dbItems.length;
-        
-        if (allSelected) {
-            selectedDatabases.clear();
-        } else {
-            dbItems.forEach(item => {
-                selectedDatabases.add(item.getAttribute('data-db-name'));
-            });
-        }
-        updateSelectedDatabasesUI();
-    }
-
-    function updateSelectedDatabasesUI() {
-        const count = selectedDatabases.size;
-        
-        // Update selected count
-        document.querySelector('.selected-count').textContent = `${count} database${count !== 1 ? 's' : ''} selected`;
-        document.getElementById('selectedDbCount').textContent = count;
-        
-        // Update button text
-        const selectAllBtn = document.getElementById('selectAllDbBtn');
-        const dbItems = document.querySelectorAll('.database-item');
-        selectAllBtn.textContent = count === dbItems.length ? 'Deselect All' : 'Select All';
-        
-        // Update checkboxes and highlighting
-        dbItems.forEach(item => {
-            const dbName = item.getAttribute('data-db-name');
-            const checkbox = item.querySelector('.database-checkbox');
-            
-            if (selectedDatabases.has(dbName)) {
-                item.classList.add('selected');
-                if (checkbox) checkbox.checked = true;
-            } else {
-                item.classList.remove('selected');
-                if (checkbox) checkbox.checked = false;
-            }
-        });
-    }
-
     async function sendMessage() {
         const input = document.getElementById('messageInput');
         const message = input.value.trim();
@@ -154,25 +63,16 @@ def get_sql_console_javascript():
         showTypingIndicator();
         
         try {
-            // Prepare request data
-            const requestData = {
-                message: message,
-                database: currentDatabase,
-                session_id: sessionId
-            };
-            
-            // Add multi-database info if in multi-db mode
-            if (multiDbMode && selectedDatabases.size > 0) {
-                requestData.multi_db_mode = true;
-                requestData.databases = Array.from(selectedDatabases);
-            }
-            
             const response = await fetch('/console/api/message', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify(requestData)
+                body: JSON.stringify({
+                    message: message,
+                    database: currentDatabase,
+                    session_id: sessionId
+                })
             });
             
             const result = await response.json();
@@ -182,11 +82,7 @@ def get_sql_console_javascript():
             if (result.status === 'success') {
                 // Add bot response
                 if (result.response_type === 'sql_result') {
-                    if (result.multi_db_results) {
-                        addMultiDbSQLResult(result);
-                    } else {
-                        addSQLResult(result);
-                    }
+                    addSQLResult(result);
                 } else if (result.response_type === 'help') {
                     addMessage(result.content, 'bot');
                 } else if (result.response_type === 'error') {
@@ -296,73 +192,6 @@ def get_sql_console_javascript():
         messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
-    function addMultiDbSQLResult(result) {
-        const messagesContainer = document.getElementById('messagesContainer');
-        const messageDiv = document.createElement('div');
-        messageDiv.className = 'message bot';
-        
-        const time = new Date().toLocaleTimeString();
-        
-        let content = `
-            <div class="message-content">
-                <div class="message-header">SQL Assistant • ${time}</div>
-                <div class="message-text">${escapeHtml(result.explanation || 'Multi-database query executed successfully')}</div>
-                <div class="sql-result">
-                    <div class="sql-query">${escapeHtml(result.sql_query)}</div>
-                    <div class="multi-db-results">
-        `;
-        
-        // Process results for each database
-        result.multi_db_results.forEach(dbResult => {
-            content += `
-                <div class="db-result-section">
-                    <div class="db-result-header">
-                        <div class="db-name">📊 ${escapeHtml(dbResult.database)}</div>
-                        <div class="db-result-stats">
-                            ${dbResult.row_count || 0} rows • ${dbResult.execution_time || 0}ms
-                        </div>
-                    </div>
-            `;
-            
-            if (dbResult.error) {
-                content += `<div class="error-message">❌ ${escapeHtml(dbResult.error)}</div>`;
-            } else if (dbResult.rows && dbResult.rows.length > 0) {
-                // Create table for this database
-                const columns = Object.keys(dbResult.rows[0]);
-                content += '<table class="result-table"><thead><tr>';
-                columns.forEach(col => {
-                    content += `<th>${escapeHtml(col)}</th>`;
-                });
-                content += '</tr></thead><tbody>';
-                
-                dbResult.rows.forEach(row => {
-                    content += '<tr>';
-                    columns.forEach(col => {
-                        const value = row[col] === null ? 'NULL' : String(row[col]);
-                        content += `<td>${escapeHtml(value)}</td>`;
-                    });
-                    content += '</tr>';
-                });
-                
-                content += '</tbody></table>';
-            } else {
-                content += '<div style="color: #64748b; padding: 1rem;">No results returned</div>';
-            }
-            
-            content += '</div>';
-        });
-        
-        content += `
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        messageDiv.innerHTML = content;
-        messagesContainer.appendChild(messageDiv);
-        messagesContainer.scrollTop = messagesContainer.scrollHeight;
-    }
-
     function addErrorMessage(error) {
         const messagesContainer = document.getElementById('messagesContainer');
         const messageDiv = document.createElement('div');
@@ -420,26 +249,13 @@ def get_sql_console_javascript():
                 result.databases.forEach(db => {
                     const dbItem = document.createElement('div');
                     dbItem.className = 'database-item';
-                    dbItem.setAttribute('data-db-name', db);
-                    
                     if (db === currentDatabase) {
                         dbItem.classList.add('active');
                     }
-                    
                     dbItem.textContent = db;
-                    dbItem.onclick = () => {
-                        if (!multiDbMode) {
-                            selectDatabase(db);
-                        }
-                    };
-                    
+                    dbItem.onclick = () => selectDatabase(db);
                     databaseList.appendChild(dbItem);
                 });
-                
-                // Re-apply multi-db mode if active
-                if (multiDbMode) {
-                    toggleMultiDbMode();
-                }
                 
                 if (result.databases.length === 0) {
                     databaseList.innerHTML = '<div style="color: #666; font-size: 0.85rem;">No databases found</div>';
@@ -459,7 +275,7 @@ def get_sql_console_javascript():
         // Update active state in list
         document.querySelectorAll('.database-item').forEach(item => {
             item.classList.remove('active');
-            if (item.getAttribute('data-db-name') === dbName) {
+            if (item.textContent === dbName) {
                 item.classList.add('active');
             }
         });
@@ -502,29 +318,6 @@ def get_sql_console_javascript():
             }
         } catch (error) {
             tableList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Connection error</div>';
-        }
-    }
-
-    async function getCurrentUser() {
-        try {
-            const response = await fetch('/console/api/current-user');
-            const result = await response.json();
-            
-            if (result.status === 'success' && result.user) {
-                // Update user display
-                const userElement = document.getElementById('currentUser');
-                userElement.textContent = result.user.name || result.user.email || 'Unknown User';
-                
-                // Add title attribute for full details
-                if (result.user.email) {
-                    userElement.title = `Email: ${result.user.email}\nAuth: ${result.user.auth_type || 'Microsoft'}`;
-                }
-            } else {
-                document.getElementById('currentUser').textContent = 'Not authenticated';
-            }
-        } catch (error) {
-            console.error('Error getting current user:', error);
-            document.getElementById('currentUser').textContent = 'Authentication error';
         }
     }
    
