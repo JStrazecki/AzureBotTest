@@ -95,11 +95,6 @@
             color: #93bbfc;
         }
 
-        .refresh-button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
         .database-list, .table-list {
             display: flex;
             flex-direction: column;
@@ -228,11 +223,6 @@
             align-self: flex-start;
         }
 
-        .message.system {
-            align-self: center;
-            max-width: 90%;
-        }
-
         .message-content {
             padding: 1rem 1.5rem;
             border-radius: 1rem;
@@ -251,13 +241,6 @@
             border-bottom-left-radius: 0.25rem;
         }
 
-        .message.system .message-content {
-            background-color: #0f172a;
-            border: 1px solid #475569;
-            font-size: 0.875rem;
-            padding: 0.75rem 1rem;
-        }
-
         .message-header {
             font-size: 0.75rem;
             color: #94a3b8;
@@ -269,58 +252,6 @@
             line-height: 1.5;
             white-space: pre-wrap;
             word-wrap: break-word;
-        }
-
-        /* Process steps */
-        .process-steps {
-            background-color: #0f172a;
-            border: 1px solid #334155;
-            border-radius: 0.5rem;
-            padding: 1rem;
-            margin-top: 0.5rem;
-            font-family: 'Courier New', monospace;
-            font-size: 0.8rem;
-        }
-
-        .process-step {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            margin-bottom: 0.5rem;
-            color: #94a3b8;
-        }
-
-        .process-step.completed {
-            color: #10b981;
-        }
-
-        .process-step.error {
-            color: #ef4444;
-        }
-
-        .process-step.active {
-            color: #3b82f6;
-        }
-
-        .step-icon {
-            width: 16px;
-            height: 16px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        .step-spinner {
-            width: 12px;
-            height: 12px;
-            border: 2px solid #3b82f6;
-            border-top-color: transparent;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
         }
 
         /* SQL Result */
@@ -437,13 +368,10 @@
             color: #64748b;
         }
 
-        .action-buttons {
-            display: flex;
-            gap: 0.5rem;
-        }
-
-        .send-button, .cancel-button {
+        .send-button {
             padding: 0.75rem 1.5rem;
+            background-color: #3b82f6;
+            color: white;
             border: none;
             border-radius: 0.5rem;
             font-weight: 500;
@@ -455,11 +383,6 @@
             gap: 0.5rem;
         }
 
-        .send-button {
-            background-color: #3b82f6;
-            color: white;
-        }
-
         .send-button:hover:not(:disabled) {
             background-color: #2563eb;
         }
@@ -467,20 +390,6 @@
         .send-button:disabled {
             opacity: 0.5;
             cursor: not-allowed;
-        }
-
-        .cancel-button {
-            background-color: #dc2626;
-            color: white;
-            display: none;
-        }
-
-        .cancel-button.active {
-            display: flex;
-        }
-
-        .cancel-button:hover {
-            background-color: #b91c1c;
         }
 
         /* Typing indicator */
@@ -531,18 +440,57 @@
             padding: 1rem;
         }
 
-        /* Empty state */
-        .empty-state {
-            text-align: center;
-            color: #64748b;
-            padding: 2rem;
-            font-size: 0.875rem;
+        /* Console debug panel */
+        .debug-panel {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            max-width: 400px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 0.75rem;
+            display: none;
         }
 
-        .empty-state-icon {
-            font-size: 2rem;
-            margin-bottom: 1rem;
-            opacity: 0.5;
+        .debug-panel.active {
+            display: block;
+        }
+
+        .debug-entry {
+            margin-bottom: 0.5rem;
+            padding: 0.25rem;
+            border-left: 2px solid #3b82f6;
+            padding-left: 0.5rem;
+        }
+
+        .debug-entry.error {
+            border-left-color: #ef4444;
+            color: #fca5a5;
+        }
+
+        .debug-entry.success {
+            border-left-color: #10b981;
+            color: #86efac;
+        }
+
+        .debug-toggle {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            cursor: pointer;
+            font-size: 1.2rem;
+            z-index: 1000;
         }
 
         /* Scrollbar styling */
@@ -586,19 +534,16 @@
         <div class="sidebar">
             <div class="sidebar-header">
                 <div class="sidebar-title">SQL Explorer</div>
-                <div class="current-db">Current: <span id="currentDatabase">Not Connected</span></div>
+                <div class="current-db">Current: <span id="currentDatabase">master</span></div>
             </div>
             
             <div class="database-section">
                 <div class="section-header">
                     <div class="section-title">Databases</div>
-                    <button class="refresh-button" id="refreshDbButton" onclick="refreshDatabases()">Load</button>
+                    <button class="refresh-button" onclick="refreshDatabases()">Refresh</button>
                 </div>
                 <div class="database-list" id="databaseList">
-                    <div class="empty-state">
-                        <div class="empty-state-icon">🗄️</div>
-                        <div>Click "Load" to fetch databases</div>
-                    </div>
+                    <div class="loading-indicator">Loading databases...</div>
                 </div>
             </div>
             
@@ -607,10 +552,7 @@
                     <div class="section-title">Tables</div>
                 </div>
                 <div class="table-list" id="tableList">
-                    <div class="empty-state">
-                        <div class="empty-state-icon">📊</div>
-                        <div>Select a database first</div>
-                    </div>
+                    <div class="loading-indicator">Select a database</div>
                 </div>
             </div>
         </div>
@@ -638,13 +580,13 @@
                             <div class="message-header">SQL Assistant</div>
                             <div class="message-text">Welcome to SQL Assistant Console! I can help you explore databases and write SQL queries.
 
-⚠️ Important: Click "Load" in the sidebar to fetch available databases. No automatic loading for security.
-
 Try commands like:
 • "sp_databases" - List all accessible databases
 • "sp_tables" - List tables in current database
 • "SELECT name FROM sys.schemas" - List schemas
 • Direct SQL queries: SELECT, WITH, etc.
+
+Current MSI has access to: master, _support, demo
 
 Type 'help' for more information.</div>
                         </div>
@@ -661,30 +603,29 @@ Type 'help' for more information.</div>
                                 onkeydown="handleKeyPress(event)"
                             ></textarea>
                         </div>
-                        <div class="action-buttons">
-                            <button id="cancelButton" class="cancel-button" onclick="cancelOperation()">
-                                Cancel
-                            </button>
-                            <button id="sendButton" class="send-button" onclick="sendMessage()">
-                                Send
-                            </button>
-                        </div>
+                        <button id="sendButton" class="send-button" onclick="sendMessage()">
+                            Send
+                        </button>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
+    <!-- Debug Panel -->
+    <button class="debug-toggle" onclick="toggleDebug()">🐛</button>
+    <div class="debug-panel" id="debugPanel"></div>
+
     <script>
-        /* sql_console_javascript.py - JavaScript code with enhanced features */
-        let currentDatabase = null;
+        /* sql_console_javascript.py - JavaScript code */
+        let currentDatabase = 'master';
         let isProcessing = false;
         let sessionId = generateSessionId();
-        let currentAbortController = null;
-        let databasesLoaded = false;
+        let debugMode = false;
 
         // Initialize
-        window.onload = function() {
+        window.onload = async function() {
+            await refreshDatabases();
             document.getElementById('messageInput').focus();
             
             // Auto-resize textarea
@@ -694,7 +635,7 @@ Type 'help' for more information.</div>
                 this.style.height = this.scrollHeight + 'px';
             });
             
-            addSystemMessage('Console initialized. Click "Load" in the sidebar to fetch available databases.');
+            debugLog('Console initialized', 'success');
         };
 
         function generateSessionId() {
@@ -705,6 +646,25 @@ Type 'help' for more information.</div>
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function debugLog(message, type = 'info') {
+            const debugPanel = document.getElementById('debugPanel');
+            const entry = document.createElement('div');
+            entry.className = `debug-entry ${type}`;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] ${message}`;
+            debugPanel.appendChild(entry);
+            debugPanel.scrollTop = debugPanel.scrollHeight;
+            
+            // Also log to console
+            console.log(`[SQL Console Debug] ${message}`);
+        }
+
+        function toggleDebug() {
+            debugMode = !debugMode;
+            const debugPanel = document.getElementById('debugPanel');
+            debugPanel.classList.toggle('active');
         }
 
         function handleKeyPress(event) {
@@ -719,157 +679,47 @@ Type 'help' for more information.</div>
             document.getElementById('messageInput').focus();
         }
 
-        function addSystemMessage(text) {
-            const messagesContainer = document.getElementById('messagesContainer');
-            const messageDiv = document.createElement('div');
-            messageDiv.className = 'message system';
-            
-            const time = new Date().toLocaleTimeString();
-            
-            messageDiv.innerHTML = `
-                <div class="message-content">
-                    <div class="message-text">ℹ️ ${escapeHtml(text)}</div>
-                </div>
-            `;
-            
-            messagesContainer.appendChild(messageDiv);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        }
-
-        function showProcessSteps(processId) {
-            const messagesContainer = document.getElementById('messagesContainer');
-            const processDiv = document.createElement('div');
-            processDiv.className = 'message system';
-            processDiv.id = `process-${processId}`;
-            
-            processDiv.innerHTML = `
-                <div class="message-content">
-                    <div class="message-header">Processing...</div>
-                    <div class="process-steps" id="steps-${processId}">
-                    </div>
-                </div>
-            `;
-            
-            messagesContainer.appendChild(processDiv);
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-            
-            return processId;
-        }
-
-        function updateProcessStep(processId, stepId, text, status = 'active') {
-            const stepsContainer = document.getElementById(`steps-${processId}`);
-            if (!stepsContainer) return;
-            
-            let stepElement = document.getElementById(`step-${processId}-${stepId}`);
-            
-            if (!stepElement) {
-                stepElement = document.createElement('div');
-                stepElement.id = `step-${processId}-${stepId}`;
-                stepElement.className = 'process-step';
-                stepsContainer.appendChild(stepElement);
-            }
-            
-            stepElement.className = `process-step ${status}`;
-            
-            let icon = '';
-            if (status === 'active') {
-                icon = '<div class="step-spinner"></div>';
-            } else if (status === 'completed') {
-                icon = '✓';
-            } else if (status === 'error') {
-                icon = '✗';
-            }
-            
-            stepElement.innerHTML = `
-                <span class="step-icon">${icon}</span>
-                <span>${escapeHtml(text)}</span>
-            `;
-            
-            // Scroll to bottom
-            const messagesContainer = document.getElementById('messagesContainer');
-            messagesContainer.scrollTop = messagesContainer.scrollHeight;
-        }
-
         async function sendMessage() {
             const input = document.getElementById('messageInput');
             const message = input.value.trim();
             
             if (!message || isProcessing) return;
             
-            // Check if databases are loaded for non-database commands
-            if (!databasesLoaded && !currentDatabase && !message.toLowerCase().includes('sp_databases')) {
-                addSystemMessage('Please load databases first by clicking "Load" in the sidebar.');
-                return;
-            }
+            debugLog(`Sending message: ${message}`, 'info');
             
             isProcessing = true;
             document.getElementById('sendButton').disabled = true;
-            document.getElementById('cancelButton').classList.add('active');
-            
-            // Create abort controller for cancellation
-            currentAbortController = new AbortController();
             
             // Add user message
             addMessage(message, 'user');
             input.value = '';
             input.style.height = 'auto';
             
-            // Show process steps
-            const processId = Date.now();
-            showProcessSteps(processId);
+            // Show typing indicator
+            showTypingIndicator();
             
             try {
-                // Step 1: Validate input
-                updateProcessStep(processId, 1, 'Validating input...', 'active');
-                await sleep(300);
-                updateProcessStep(processId, 1, 'Input validated', 'completed');
-                
-                // Step 2: Check database context
-                updateProcessStep(processId, 2, `Checking database context: ${currentDatabase || 'None selected'}`, 'active');
-                await sleep(300);
-                
-                if (!currentDatabase && !message.toLowerCase().includes('database')) {
-                    updateProcessStep(processId, 2, 'No database selected, using master', 'completed');
-                    currentDatabase = 'master';
-                } else {
-                    updateProcessStep(processId, 2, `Using database: ${currentDatabase || 'master'}`, 'completed');
-                }
-                
-                // Step 3: Prepare request
-                updateProcessStep(processId, 3, 'Preparing request...', 'active');
-                
                 const payload = {
                     message: message,
-                    database: currentDatabase || 'master',
+                    database: currentDatabase,
                     session_id: sessionId
                 };
                 
-                updateProcessStep(processId, 3, 'Request prepared', 'completed');
-                
-                // Step 4: Send to server
-                updateProcessStep(processId, 4, 'Sending to SQL Assistant server...', 'active');
+                debugLog(`Request payload: ${JSON.stringify(payload)}`, 'info');
                 
                 const response = await fetch('/console/api/message', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify(payload),
-                    signal: currentAbortController.signal
+                    body: JSON.stringify(payload)
                 });
-                
-                updateProcessStep(processId, 4, 'Response received from server', 'completed');
-                
-                // Step 5: Process response
-                updateProcessStep(processId, 5, 'Processing response...', 'active');
                 
                 const result = await response.json();
                 
-                // Hide process steps
-                const processDiv = document.getElementById(`process-${processId}`);
-                if (processDiv) {
-                    processDiv.style.display = 'none';
-                }
+                debugLog(`Response received: ${JSON.stringify(result).substring(0, 200)}...`, 'info');
+                
+                hideTypingIndicator();
                 
                 if (result.status === 'success') {
                     // Add bot response
@@ -892,45 +742,19 @@ Type 'help' for more information.</div>
                     if (result.refresh_tables) {
                         await loadTables(currentDatabase);
                     }
-                    
-                    // Refresh databases if sp_databases was called
-                    if (message.toLowerCase().includes('sp_databases')) {
-                        await refreshDatabasesFromResult(result);
-                    }
                 } else {
-                    updateProcessStep(processId, 5, 'Error in response', 'error');
+                    debugLog(`Error: ${result.error}`, 'error');
                     addErrorMessage(result.error || 'An error occurred');
                 }
             } catch (error) {
-                if (error.name === 'AbortError') {
-                    addSystemMessage('Operation cancelled by user');
-                } else {
-                    addErrorMessage('Connection error: ' + error.message);
-                }
-                
-                // Update process step to show error
-                const processDiv = document.getElementById(`process-${processId}`);
-                if (processDiv) {
-                    updateProcessStep(processId, 99, `Error: ${error.message}`, 'error');
-                }
+                debugLog(`Network error: ${error.message}`, 'error');
+                hideTypingIndicator();
+                addErrorMessage('Connection error: ' + error.message);
             } finally {
                 isProcessing = false;
                 document.getElementById('sendButton').disabled = false;
-                document.getElementById('cancelButton').classList.remove('active');
-                currentAbortController = null;
                 input.focus();
             }
-        }
-
-        function cancelOperation() {
-            if (currentAbortController) {
-                currentAbortController.abort();
-                addSystemMessage('Cancelling operation...');
-            }
-        }
-
-        function sleep(ms) {
-            return new Promise(resolve => setTimeout(resolve, ms));
         }
 
         function addMessage(text, sender) {
@@ -953,6 +777,8 @@ Type 'help' for more information.</div>
         }
 
         function addSQLResult(result) {
+            debugLog(`Adding SQL result: ${result.row_count} rows`, 'success');
+            
             const messagesContainer = document.getElementById('messagesContainer');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message bot';
@@ -970,7 +796,7 @@ Type 'help' for more information.</div>
                     <div class="sql-result">
                         <div class="result-header">
                             <div class="result-info">
-                                Database: ${result.database || currentDatabase || 'master'}
+                                Database: ${result.database || currentDatabase}
                             </div>
                             <div class="result-info">
                                 ${result.row_count || 0} rows • ${result.execution_time || 0}ms
@@ -1013,6 +839,8 @@ Type 'help' for more information.</div>
         }
 
         function addErrorMessage(error) {
+            debugLog(`Error message: ${error}`, 'error');
+            
             const messagesContainer = document.getElementById('messagesContainer');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'message bot';
@@ -1030,24 +858,42 @@ Type 'help' for more information.</div>
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
         }
 
-        async function refreshDatabases() {
-            if (isProcessing) {
-                addSystemMessage('Another operation is in progress. Please wait...');
-                return;
+        function showTypingIndicator() {
+            const messagesContainer = document.getElementById('messagesContainer');
+            const typingDiv = document.createElement('div');
+            typingDiv.id = 'typingIndicator';
+            typingDiv.className = 'message bot';
+            typingDiv.innerHTML = `
+                <div class="typing-indicator">
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                    <div class="typing-dot"></div>
+                    <span>SQL Assistant is thinking...</span>
+                </div>
+            `;
+            
+            messagesContainer.appendChild(typingDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function hideTypingIndicator() {
+            const indicator = document.getElementById('typingIndicator');
+            if (indicator) {
+                indicator.remove();
             }
+        }
+
+        async function refreshDatabases() {
+            debugLog('Refreshing databases...', 'info');
             
-            const refreshButton = document.getElementById('refreshDbButton');
             const databaseList = document.getElementById('databaseList');
-            
-            refreshButton.disabled = true;
-            refreshButton.textContent = 'Loading...';
-            databaseList.innerHTML = '<div class="loading-indicator">Fetching databases...</div>';
-            
-            addSystemMessage('Loading databases from server...');
+            databaseList.innerHTML = '<div class="loading-indicator">Loading databases...</div>';
             
             try {
                 const response = await fetch('/console/api/databases');
                 const result = await response.json();
+                
+                debugLog(`Databases loaded: ${result.databases ? result.databases.length : 0}`, 'success');
                 
                 if (result.status === 'success' && result.databases) {
                     databaseList.innerHTML = '';
@@ -1064,65 +910,20 @@ Type 'help' for more information.</div>
                     });
                     
                     if (result.databases.length === 0) {
-                        databaseList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">❌</div><div>No databases found</div></div>';
-                    } else {
-                        databasesLoaded = true;
-                        addSystemMessage(`Loaded ${result.databases.length} databases: ${result.databases.join(', ')}`);
-                        
-                        // Auto-select first database if none selected
-                        if (!currentDatabase && result.databases.length > 0) {
-                            selectDatabase(result.databases[0]);
-                        }
+                        databaseList.innerHTML = '<div style="color: #666; font-size: 0.85rem;">No databases found</div>';
                     }
                 } else {
                     databaseList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Error loading databases</div>';
-                    addSystemMessage('Failed to load databases: ' + (result.error || 'Unknown error'));
                 }
             } catch (error) {
+                debugLog(`Database loading error: ${error.message}`, 'error');
                 databaseList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Connection error</div>';
-                addSystemMessage('Failed to connect to server: ' + error.message);
-            } finally {
-                refreshButton.disabled = false;
-                refreshButton.textContent = 'Load';
-            }
-        }
-
-        async function refreshDatabasesFromResult(result) {
-            // Update sidebar with databases from sp_databases result
-            if (result.content && result.content.includes('Available databases:')) {
-                const databaseList = document.getElementById('databaseList');
-                databaseList.innerHTML = '';
-                
-                // Extract database names from the content
-                const lines = result.content.split('\n');
-                const databases = [];
-                
-                lines.forEach(line => {
-                    if (line.startsWith('• ')) {
-                        const dbName = line.substring(2).trim();
-                        databases.push(dbName);
-                    }
-                });
-                
-                if (databases.length > 0) {
-                    databases.forEach(db => {
-                        const dbItem = document.createElement('div');
-                        dbItem.className = 'database-item';
-                        if (db === currentDatabase) {
-                            dbItem.classList.add('active');
-                        }
-                        dbItem.textContent = db;
-                        dbItem.onclick = () => selectDatabase(db);
-                        databaseList.appendChild(dbItem);
-                    });
-                    
-                    databasesLoaded = true;
-                    addSystemMessage(`Sidebar updated with ${databases.length} databases`);
-                }
             }
         }
 
         async function selectDatabase(dbName) {
+            debugLog(`Switching to database: ${dbName}`, 'info');
+            
             currentDatabase = dbName;
             document.getElementById('currentDatabase').textContent = dbName;
             
@@ -1144,6 +945,8 @@ Type 'help' for more information.</div>
         async function loadTables(database) {
             if (!database) return;
             
+            debugLog(`Loading tables for database: ${database}`, 'info');
+            
             const tableList = document.getElementById('tableList');
             tableList.innerHTML = '<div class="loading-indicator">Loading tables...</div>';
             
@@ -1151,11 +954,13 @@ Type 'help' for more information.</div>
                 const response = await fetch(`/console/api/tables?database=${encodeURIComponent(database)}`);
                 const result = await response.json();
                 
+                debugLog(`Tables loaded: ${result.tables ? result.tables.length : 0}`, 'success');
+                
                 if (result.status === 'success' && result.tables) {
                     tableList.innerHTML = '';
                     
                     if (result.tables.length === 0) {
-                        tableList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📭</div><div>No tables found</div></div>';
+                        tableList.innerHTML = '<div style="color: #666; font-size: 0.85rem;">No tables found</div>';
                     } else {
                         result.tables.forEach(table => {
                             const tableItem = document.createElement('div');
@@ -1167,13 +972,12 @@ Type 'help' for more information.</div>
                             };
                             tableList.appendChild(tableItem);
                         });
-                        
-                        addSystemMessage(`Loaded ${result.tables.length} tables from ${database}`);
                     }
                 } else {
                     tableList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Error loading tables</div>';
                 }
             } catch (error) {
+                debugLog(`Table loading error: ${error.message}`, 'error');
                 tableList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Connection error</div>';
             }
         }
