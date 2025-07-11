@@ -263,15 +263,41 @@ class SQLConsole:
 • Results are limited to prevent overload
 • The console shows detailed steps for each operation"""
     
-    async def _get_databases_with_logging(self, session_id: str) -> List[str]:
+    async def _get_databases_with_logging(self, session_id: str, force_refresh: bool = False) -> List[str]:
         """Get list of databases with logging"""
         try:
-            # Use known accessible databases from MSI check
-            await self._send_log_message(session_id, "🔍 Using known accessible databases from MSI configuration", "info")
-            databases = KNOWN_ACCESSIBLE_DATABASES.copy()
+            if not self.function_url:
+                await self._send_log_message(session_id, "⚠️ Azure Function URL not configured, using fallback", "warning")
+                return KNOWN_ACCESSIBLE_DATABASES.copy()
             
-            await self._send_log_message(session_id, f"✅ Found {len(databases)} accessible databases", "success")
-            return databases
+            await self._send_log_message(session_id, "🔍 Discovering accessible databases from server...", "info")
+            
+            # Call Azure Function to get databases
+            payload = {
+                "query_type": "metadata",
+                "force_refresh": force_refresh
+            }
+            
+            result = await self._call_function_with_logging(payload, session_id)
+            
+            if result and 'databases' in result:
+                databases = result['databases']
+                await self._send_log_message(session_id, f"✅ Found {len(databases)} accessible databases", "success")
+                
+                # Log additional info if available
+                if 'msi_identity' in result:
+                    await self._send_log_message(session_id, f"🔐 MSI Identity: {result['msi_identity']}", "debug")
+                
+                if 'cache_info' in result and result['cache_info'].get('cached'):
+                    cache_age = result['cache_info'].get('cache_age_seconds', 0)
+                    await self._send_log_message(session_id, f"📦 Using cached results (age: {cache_age}s)", "debug")
+                else:
+                    await self._send_log_message(session_id, "🔄 Fresh discovery completed", "debug")
+                
+                return databases
+            else:
+                await self._send_log_message(session_id, "⚠️ No database list received, using fallback", "warning")
+                return KNOWN_ACCESSIBLE_DATABASES.copy()
                 
         except Exception as e:
             logger.error(f"Error getting databases: {e}")
@@ -451,10 +477,12 @@ class SQLConsole:
     async def get_databases_api(self, request: Request) -> Response:
         """API endpoint to get databases"""
         try:
-            # Return known accessible databases
-            databases = KNOWN_ACCESSIBLE_DATABASES.copy()
+            session_id = request.query.get('session_id', 'api')
+            force_refresh = request.query.get('force_refresh', '').lower() == 'true'
             
-            logger.info(f"Returning {len(databases)} known accessible databases")
+            databases = await self._get_databases_with_logging(session_id, force_refresh)
+            
+            logger.info(f"Returning {len(databases)} accessible databases")
             
             return json_response({
                 'status': 'success',

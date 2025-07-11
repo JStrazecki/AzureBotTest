@@ -57,31 +57,89 @@ def get_sql_console_javascript():
 
     async function loadInitialDatabases() {
         const databaseList = document.getElementById('databaseList');
-        databaseList.innerHTML = '';
+        databaseList.innerHTML = '<div class="loading-indicator">Discovering databases...</div>';
         
-        // Load known accessible databases without making API call
-        const knownDatabases = ['master', '_support', 'demo'];
+        addLogMessage('Initializing database discovery...', 'info');
         
-        knownDatabases.forEach(db => {
-            const dbItem = document.createElement('div');
-            dbItem.className = 'database-item';
-            dbItem.setAttribute('data-db-name', db);
+        try {
+            // Instead of hardcoding, fetch from server
+            const response = await fetch('/console/api/databases');
+            const result = await response.json();
             
-            if (db === currentDatabase) {
-                dbItem.classList.add('active');
+            if (result.status === 'success' && result.databases) {
+                databaseList.innerHTML = '';
+                
+                result.databases.forEach(db => {
+                    const dbItem = document.createElement('div');
+                    dbItem.className = 'database-item';
+                    dbItem.setAttribute('data-db-name', db);
+                    
+                    if (db === currentDatabase) {
+                        dbItem.classList.add('active');
+                    }
+                    
+                    dbItem.textContent = db;
+                    dbItem.onclick = () => {
+                        if (!multiDbMode) {
+                            selectDatabase(db);
+                        }
+                    };
+                    
+                    databaseList.appendChild(dbItem);
+                });
+                
+                addLogMessage(`Discovered ${result.databases.length} accessible databases: ${result.databases.join(', ')}`, 'success');
+            } else {
+                // Fallback to known databases
+                const knownDatabases = ['master', '_support', 'demo'];
+                knownDatabases.forEach(db => {
+                    const dbItem = document.createElement('div');
+                    dbItem.className = 'database-item';
+                    dbItem.setAttribute('data-db-name', db);
+                    
+                    if (db === currentDatabase) {
+                        dbItem.classList.add('active');
+                    }
+                    
+                    dbItem.textContent = db;
+                    dbItem.onclick = () => {
+                        if (!multiDbMode) {
+                            selectDatabase(db);
+                        }
+                    };
+                    
+                    databaseList.appendChild(dbItem);
+                });
+                
+                addLogMessage('Using fallback database list', 'warning');
             }
+        } catch (error) {
+            addLogMessage(`Error discovering databases: ${error.message}`, 'error');
+            addLogMessage('Using known accessible databases: master, _support, demo', 'info');
             
-            dbItem.textContent = db;
-            dbItem.onclick = () => {
-                if (!multiDbMode) {
-                    selectDatabase(db);
+            // Fallback to known databases
+            const knownDatabases = ['master', '_support', 'demo'];
+            databaseList.innerHTML = '';
+            
+            knownDatabases.forEach(db => {
+                const dbItem = document.createElement('div');
+                dbItem.className = 'database-item';
+                dbItem.setAttribute('data-db-name', db);
+                
+                if (db === currentDatabase) {
+                    dbItem.classList.add('active');
                 }
-            };
-            
-            databaseList.appendChild(dbItem);
-        });
-        
-        addLogMessage('Loaded known accessible databases', 'info');
+                
+                dbItem.textContent = db;
+                dbItem.onclick = () => {
+                    if (!multiDbMode) {
+                        selectDatabase(db);
+                    }
+                };
+                
+                databaseList.appendChild(dbItem);
+            });
+        }
     }
 
     function toggleMultiDbMode() {
@@ -538,14 +596,15 @@ def get_sql_console_javascript():
         }
     }
 
-    async function refreshDatabases() {
+    async function refreshDatabases(forceRefresh = false) {
         const databaseList = document.getElementById('databaseList');
         databaseList.innerHTML = '<div class="loading-indicator">Loading databases...</div>';
         
         addLogMessage('Refreshing database list...', 'info');
         
         try {
-            const response = await fetch('/console/api/databases');
+            const url = forceRefresh ? '/console/api/databases?force_refresh=true' : '/console/api/databases';
+            const response = await fetch(url);
             const result = await response.json();
             
             if (result.status === 'success' && result.databases) {
