@@ -1,7 +1,6 @@
 # sql_console_routes.py - Enhanced SQL Console Routes with Multi-DB Support
 """
-SQL Console Routes - Enhanced with multi-database support, intelligent query routing,
-and AI-powered result analysis
+SQL Console Routes - Fixed table loading query
 """
 
 import os
@@ -41,6 +40,89 @@ class SQLConsole:
         """Serve the SQL console HTML page"""
         html_content = get_sql_console_html()
         return Response(text=html_content, content_type='text/html')
+    
+    async def get_tables_api(self, request: Request) -> Response:
+        """API endpoint to get tables - FIXED query format"""
+        try:
+            database = request.query.get('database', 'demo')
+            session_id = request.query.get('session_id', 'api')
+            
+            logger.info(f"Getting tables for database: {database}")
+            
+            # FIXED: Use simpler query format that works better
+            # Try multiple approaches to ensure we get tables
+            queries_to_try = [
+                # Method 1: Direct sp_tables call
+                "sp_tables",
+                # Method 2: INFORMATION_SCHEMA query
+                """SELECT TABLE_SCHEMA + '.' + TABLE_NAME as TABLE_NAME 
+                   FROM INFORMATION_SCHEMA.TABLES 
+                   WHERE TABLE_TYPE = 'BASE TABLE' 
+                   ORDER BY TABLE_SCHEMA, TABLE_NAME""",
+                # Method 3: sys tables query
+                """SELECT s.name + '.' + t.name as TABLE_NAME
+                   FROM sys.tables t
+                   JOIN sys.schemas s ON t.schema_id = s.schema_id
+                   WHERE t.type = 'U'
+                   ORDER BY s.name, t.name"""
+            ]
+            
+            for query_idx, query in enumerate(queries_to_try):
+                logger.info(f"Trying query method {query_idx + 1}: {query[:50]}...")
+                
+                result = await self._execute_sql_query_with_logging(query, database, session_id)
+                
+                if result.get('rows'):
+                    tables = []
+                    
+                    # Handle different result formats
+                    for row in result['rows']:
+                        # sp_tables format
+                        if 'TABLE_NAME' in row and row.get('TABLE_TYPE') == 'TABLE':
+                            table_name = row['TABLE_NAME']
+                            owner = row.get('TABLE_OWNER', 'dbo')
+                            qualifier = row.get('TABLE_QUALIFIER')
+                            
+                            # Build full table name
+                            if owner and owner != 'dbo':
+                                tables.append(f"{owner}.{table_name}")
+                            else:
+                                tables.append(table_name)
+                        
+                        # INFORMATION_SCHEMA or sys.tables format
+                        elif 'TABLE_NAME' in row and 'TABLE_TYPE' not in row:
+                            tables.append(row['TABLE_NAME'])
+                    
+                    if tables:
+                        logger.info(f"Found {len(tables)} tables using method {query_idx + 1}")
+                        
+                        return json_response({
+                            'status': 'success',
+                            'tables': sorted(list(set(tables))),  # Remove duplicates and sort
+                            'database': database,
+                            'method': f'query_method_{query_idx + 1}'
+                        })
+                
+                # If we get an error with sp_tables, try next method
+                if result.get('error'):
+                    logger.warning(f"Method {query_idx + 1} failed: {result['error']}")
+                    continue
+            
+            # If all methods fail, return empty list
+            logger.warning(f"No tables found in {database} after trying all methods")
+            return json_response({
+                'status': 'success',
+                'tables': [],
+                'database': database,
+                'note': 'No tables found or access denied'
+            })
+                
+        except Exception as e:
+            logger.error(f"Tables API error: {e}", exc_info=True)
+            return json_response({
+                'status': 'error',
+                'error': str(e)
+            })
     
     async def handle_message(self, request: Request) -> Response:
         """Handle incoming console messages with enhanced multi-database support"""
@@ -370,43 +452,43 @@ class SQLConsole:
         return """SQL Assistant Console - Enhanced Features:
 
 **Natural Language Queries:**
-• "Show me all customers"
-• "Compare columns in AD table across all databases"
-• "Check standardization of accounting views"
-• "Find differences in table structure between systems"
+- "Show me all customers"
+- "Compare columns in AD table across all databases"
+- "Check standardization of accounting views"
+- "Find differences in table structure between systems"
 
 **Multi-Database Features:**
-• Toggle "Multi-Database Query" mode in sidebar
-• Select databases for comparison
-• Automatic result analysis and formatting
-• Intelligent query splitting for performance
+- Toggle "Multi-Database Query" mode in sidebar
+- Select databases for comparison
+- Automatic result analysis and formatting
+- Intelligent query splitting for performance
 
 **Standardization Commands:**
-• "compare schemas [table]" - Compare table structure across databases
-• "check standardization" - Verify schema compliance
-• "show [schema] views" - List views in specific schema (acc, inv, hr, crm)
+- "compare schemas [table]" - Compare table structure across databases
+- "check standardization" - Verify schema compliance
+- "show [schema] views" - List views in specific schema (acc, inv, hr, crm)
 
 **SQL Commands:**
-• SELECT, WITH, and other read queries
-• System procedures (sp_tables, sp_columns, etc.)
-• Direct SQL syntax with T-SQL support
+- SELECT, WITH, and other read queries
+- System procedures (sp_tables, sp_columns, etc.)
+- Direct SQL syntax with T-SQL support
 
 **Available Databases:**
-• _support - Support database
-• demo - Demo database with standardized schemas
-• Additional databases discovered dynamically
+- _support - Support database
+- demo - Demo database with standardized schemas
+- Additional databases discovered dynamically
 
 **Schema Standards:**
-• acc - Accounting (financial data)
-• inv - Inventory management
-• hr - Human resources
-• crm - Customer relationship management
+- acc - Accounting (financial data)
+- inv - Inventory management
+- hr - Human resources
+- crm - Customer relationship management
 
 **Tips:**
-• Results are automatically analyzed for insights
-• Use multi-database mode for standardization checks
-• Copy conversation logs with the copy button
-• The console shows processing steps in real-time"""
+- Results are automatically analyzed for insights
+- Use multi-database mode for standardization checks
+- Copy conversation logs with the copy button
+- The console shows processing steps in real-time"""
     
     async def get_databases_api(self, request: Request) -> Response:
         """API endpoint to get databases (excluding master)"""
@@ -551,47 +633,6 @@ class SQLConsole:
                 
         except Exception as e:
             return {'error': str(e)}
-    
-    async def get_tables_api(self, request: Request) -> Response:
-        """API endpoint to get tables"""
-        try:
-            database = request.query.get('database', 'demo')
-            session_id = request.query.get('session_id', 'api')
-            
-            # Use sp_tables for better compatibility
-            query = "EXEC sp_tables @table_type = \"'TABLE'\""
-            
-            result = await self._execute_sql_query_with_logging(query, database, session_id)
-            
-            if result.get('rows'):
-                tables = []
-                for row in result['rows']:
-                    table_name = row.get('TABLE_NAME') or row.get('table_name')
-                    if table_name:
-                        owner = row.get('TABLE_OWNER') or row.get('table_owner')
-                        if owner and owner != 'dbo':
-                            tables.append(f"{owner}.{table_name}")
-                        else:
-                            tables.append(table_name)
-                
-                return json_response({
-                    'status': 'success',
-                    'tables': sorted(tables),
-                    'database': database
-                })
-            else:
-                return json_response({
-                    'status': 'success',
-                    'tables': [],
-                    'database': database
-                })
-                
-        except Exception as e:
-            logger.error(f"Tables API error: {e}")
-            return json_response({
-                'status': 'error',
-                'error': str(e)
-            })
     
     async def cancel_request_api(self, request: Request) -> Response:
         """API endpoint to cancel active request"""
