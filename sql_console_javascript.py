@@ -1,6 +1,6 @@
 # sql_console_javascript.py - Enhanced SQL Console JavaScript
 """
-SQL Console JavaScript - Enhanced with multi-database support, copy logs, and standardization features
+SQL Console JavaScript - Fixed multi-database mode table loading issue
 """
 
 def get_sql_console_javascript():
@@ -96,9 +96,20 @@ def get_sql_console_javascript():
                     else if (db === 'demo') icon = '📊';
                     
                     dbItem.innerHTML = `<span class="db-icon">${icon}</span> ${db}`;
-                    dbItem.onclick = () => {
-                        if (!multiDbMode) {
-                            selectDatabase(db);
+                    
+                    // FIXED: Always allow database selection for viewing tables
+                    dbItem.onclick = (e) => {
+                        // Check if click was on checkbox
+                        if (e.target.classList.contains('database-checkbox')) {
+                            return; // Let checkbox handle its own click
+                        }
+                        
+                        // Always select database to view tables
+                        selectDatabase(db);
+                        
+                        // If in multi-db mode and not clicking checkbox, also toggle selection
+                        if (multiDbMode && !e.target.classList.contains('database-checkbox')) {
+                            toggleDatabaseSelection(db);
                         }
                     };
                     
@@ -754,9 +765,11 @@ def get_sql_console_javascript():
         // Load tables
         await loadTables(dbName);
         
-        // Add notification
-        addMessage(`Database changed to: ${dbName}`, 'bot');
-        addLogMessage(`Switched to database: ${dbName}`, 'info');
+        // Add notification - FIXED: Only add notification if database actually changed
+        if (dbName !== currentDatabase || !document.querySelector('.table-item')) {
+            addMessage(`Database changed to: ${dbName}`, 'bot');
+            addLogMessage(`Switched to database: ${dbName}`, 'info');
+        }
     }
 
     async function loadTables(database) {
