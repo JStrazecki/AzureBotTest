@@ -244,6 +244,7 @@ class SQLConsole:
 • show databases - List all databases
 • show tables - List tables in current database
 • sp_databases - List all databases (T-SQL)
+• sp_tables - List tables using system procedure
 
 **Multi-Database Queries:**
 • Toggle "Multi-Database Query" mode in the sidebar
@@ -261,7 +262,8 @@ class SQLConsole:
 • Click on a table name to create a SELECT query
 • Use natural language or SQL syntax
 • Results are limited to prevent overload
-• The console shows detailed steps for each operation"""
+• The console shows detailed steps for each operation
+• If tables don't show with 'show tables', try 'sp_tables' or 'SELECT name FROM sys.tables'"""
     
     async def _get_databases_with_logging(self, session_id: str, force_refresh: bool = False) -> List[str]:
         """Get list of databases with logging"""
@@ -311,25 +313,88 @@ class SQLConsole:
                 await self._send_log_message(session_id, "⚠️ Azure Function URL not configured", "warning")
                 return []
             
-            # Execute query to get tables
-            query = """
-            SELECT TABLE_NAME 
-            FROM INFORMATION_SCHEMA.TABLES 
-            WHERE TABLE_TYPE = 'BASE TABLE' 
-            ORDER BY TABLE_NAME
-            """
+            # First try using sp_tables which is more reliable
+            sp_tables_query = "EXEC sp_tables @table_type = \"'TABLE'\""
             
-            await self._send_log_message(session_id, f"🔍 Querying INFORMATION_SCHEMA for tables in {database}", "info")
+            await self._send_log_message(session_id, f"🔍 Trying sp_tables to list tables in {database}", "info")
             
-            result = await self._execute_sql_query_with_logging(query, database, session_id)
+            result = await self._execute_sql_query_with_logging(sp_tables_query, database, session_id)
             
             if result.get('rows'):
-                tables = [row['TABLE_NAME'] for row in result['rows']]
-                await self._send_log_message(session_id, f"✅ Found {len(tables)} tables", "success")
+                # sp_tables returns TABLE_QUALIFIER, TABLE_OWNER, TABLE_NAME, TABLE_TYPE, REMARKS
+                tables = []
+                for row in result['rows']:
+                    # Get table name, handling different column name possibilities
+                    table_name = row.get('TABLE_NAME') or row.get('table_name') or row.get('3')
+                    if table_name:
+                        # Optional: include schema
+                        owner = row.get('TABLE_OWNER') or row.get('table_owner') or row.get('2')
+                        if owner and owner != 'dbo':
+                            tables.append(f"{owner}.{table_name}")
+                        else:
+                            tables.append(table_name)
+                
+                if tables:
+                    await self._send_log_message(session_id, f"✅ Found {len(tables)} tables using sp_tables", "success")
+                    return sorted(tables)
+            
+            # If sp_tables didn't work, try sys.tables
+            await self._send_log_message(session_id, f"🔍 Trying sys.tables approach", "info")
+            
+            sys_tables_query = """
+            SELECT 
+                SCHEMA_NAME(schema_id) as SchemaName,
+                name as TableName
+            FROM sys.tables
+            ORDER BY SchemaName, TableName
+            """
+            
+            result = await self._execute_sql_query_with_logging(sys_tables_query, database, session_id)
+            
+            if result.get('rows'):
+                tables = []
+                for row in result['rows']:
+                    schema = row.get('SchemaName', 'dbo')
+                    table = row.get('TableName', '')
+                    if table:
+                        if schema != 'dbo':
+                            tables.append(f"{schema}.{table}")
+                        else:
+                            tables.append(table)
+                
+                await self._send_log_message(session_id, f"✅ Found {len(tables)} tables using sys.tables", "success")
                 return tables
-            else:
-                await self._send_log_message(session_id, f"⚠️ No tables found or access denied", "warning")
-                return []
+            
+            # Last resort: try INFORMATION_SCHEMA
+            await self._send_log_message(session_id, f"🔍 Trying INFORMATION_SCHEMA as fallback", "info")
+            
+            info_schema_query = """
+            SELECT TABLE_SCHEMA, TABLE_NAME 
+            FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_TYPE = 'BASE TABLE' 
+            ORDER BY TABLE_SCHEMA, TABLE_NAME
+            """
+            
+            result = await self._execute_sql_query_with_logging(info_schema_query, database, session_id)
+            
+            if result.get('rows'):
+                tables = []
+                for row in result['rows']:
+                    schema = row.get('TABLE_SCHEMA', 'dbo')
+                    table = row.get('TABLE_NAME', '')
+                    if table:
+                        if schema != 'dbo':
+                            tables.append(f"{schema}.{table}")
+                        else:
+                            tables.append(table)
+                
+                await self._send_log_message(session_id, f"✅ Found {len(tables)} tables using INFORMATION_SCHEMA", "success")
+                return tables
+            
+            # If all methods failed
+            await self._send_log_message(session_id, f"⚠️ Could not retrieve tables from {database}", "warning")
+            await self._send_log_message(session_id, f"💡 Try running: sp_tables or SELECT name FROM sys.tables", "info")
+            return []
                 
         except Exception as e:
             logger.error(f"Error getting tables: {e}")
