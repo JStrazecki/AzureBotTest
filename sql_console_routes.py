@@ -66,7 +66,7 @@ class SQLConsole:
             if multi_db_mode:
                 await self._send_log_message(session_id, f"📊 Multi-database mode: {len(databases)} databases selected", "info")
             
-            # Check for special commands
+            # Check for special commands first (before SQL validation)
             if message.lower() in ['help', '?']:
                 await self._send_log_message(session_id, "📖 Showing help information", "info")
                 return json_response({
@@ -77,127 +77,152 @@ class SQLConsole:
             
             if message.lower() in ['show databases', 'databases', 'sp_databases']:
                 await self._send_log_message(session_id, "🗄️ Fetching database list...", "info")
-                databases = await self._get_databases_with_logging(session_id)
+                # Execute sp_databases as SQL query
+                sql_query = "EXEC sp_databases"
+                execution_result = await self._execute_sql_query_with_logging(sql_query, 'master', session_id)
+                
+                if execution_result.get('error'):
+                    return json_response({
+                        'status': 'error',
+                        'error': execution_result['error']
+                    })
+                
+                # Format database list from results
+                databases = []
+                if execution_result.get('rows'):
+                    for row in execution_result['rows']:
+                        db_name = row.get('DATABASE_NAME') or row.get('database_name') or row.get('name')
+                        if db_name:
+                            databases.append(db_name)
                 
                 content = f"Available databases ({len(databases)}):\n" + "\n".join(f"• {db}" for db in databases)
+                
                 return json_response({
                     'status': 'success',
-                    'response_type': 'text',
-                    'content': content
+                    'response_type': 'sql_result',
+                    'sql_query': sql_query,
+                    'database': 'master',
+                    'explanation': 'List of all databases',
+                    'rows': execution_result.get('rows', []),
+                    'row_count': execution_result.get('row_count', 0),
+                    'execution_time': execution_result.get('execution_time_ms', 0)
                 })
             
+            # Handle show tables command
             if message.lower() in ['show tables', 'tables']:
                 await self._send_log_message(session_id, f"📋 Getting tables from database: {database}", "info")
-                tables = await self._get_tables_with_logging(database, session_id)
+                # Use sp_tables for better compatibility
+                sql_query = "EXEC sp_tables @table_type = \"'TABLE'\""
                 
-                if tables:
-                    content = f"Tables in {database} ({len(tables)}):\n" + "\n".join(f"• {table}" for table in tables)
-                else:
-                    content = f"No tables found in {database} or access denied"
-                    await self._send_log_message(session_id, f"⚠️ No tables found in {database}", "warning")
+                execution_result = await self._execute_sql_query_with_logging(sql_query, database, session_id)
+                
+                if execution_result.get('error'):
+                    return json_response({
+                        'status': 'error',
+                        'error': execution_result['error']
+                    })
                 
                 return json_response({
                     'status': 'success',
-                    'response_type': 'text',
-                    'content': content,
+                    'response_type': 'sql_result',
+                    'sql_query': sql_query,
+                    'database': database,
+                    'explanation': f'Tables in {database} database',
+                    'rows': execution_result.get('rows', []),
+                    'row_count': execution_result.get('row_count', 0),
+                    'execution_time': execution_result.get('execution_time_ms', 0),
                     'refresh_tables': True
                 })
             
-            # Process SQL query
-            if self.sql_translator:
-                try:
-                    # Check if it's already a SQL query
-                    if self._is_sql_query(message):
-                        await self._send_log_message(session_id, "✅ Detected direct SQL query", "info")
-                        sql_query = message
-                        explanation = "Direct SQL query execution"
-                    else:
-                        await self._send_log_message(session_id, "🤖 Translating natural language to SQL...", "info")
-                        
-                        # Get schema context
-                        schema_context = await self._get_schema_context(database)
-                        if schema_context:
-                            await self._send_log_message(session_id, f"📊 Schema context: {schema_context[:100]}...", "debug")
-                        
-                        # Translate
-                        result = await self.sql_translator.translate_to_sql(
-                            message,
-                            database=database,
-                            schema_context=schema_context
-                        )
-                        
-                        if result.error or not result.query:
-                            error_msg = result.error or 'Could not translate to SQL query'
-                            await self._send_log_message(session_id, f"❌ Translation failed: {error_msg}", "error")
-                            return json_response({
-                                'status': 'error',
-                                'error': error_msg
-                            })
-                        
-                        sql_query = result.query
-                        explanation = result.explanation
-                        await self._send_log_message(session_id, f"✅ Translated to SQL: {sql_query[:100]}...", "success")
-                    
-                    # Execute the query
-                    if multi_db_mode and databases:
-                        await self._send_log_message(session_id, f"🔄 Executing across {len(databases)} databases...", "info")
-                        multi_results = await self._execute_multi_db_query_with_logging(sql_query, databases, session_id)
-                        
-                        # Count total results
-                        total_rows = sum(r.get('row_count', 0) for r in multi_results)
-                        total_time = sum(r.get('execution_time_ms', 0) for r in multi_results)
-                        
-                        await self._send_log_message(session_id, f"✅ Multi-DB execution complete: {total_rows} total rows in {total_time:.0f}ms", "success")
-                        
-                        return json_response({
-                            'status': 'success',
-                            'response_type': 'sql_result',
-                            'sql_query': sql_query,
-                            'explanation': explanation,
-                            'multi_db_results': multi_results,
-                            'total_rows': total_rows,
-                            'total_execution_time': total_time,
-                            'database_count': len(databases)
-                        })
-                    else:
-                        await self._send_log_message(session_id, f"🔄 Executing query on {database}...", "info")
-                        execution_result = await self._execute_sql_query_with_logging(sql_query, database, session_id)
-                        
-                        if execution_result.get('error'):
-                            await self._send_log_message(session_id, f"❌ Query failed: {execution_result['error']}", "error")
-                            return json_response({
-                                'status': 'error',
-                                'error': execution_result['error']
-                            })
-                        
-                        rows = execution_result.get('row_count', 0)
-                        time_ms = execution_result.get('execution_time_ms', 0)
-                        await self._send_log_message(session_id, f"✅ Query complete: {rows} rows in {time_ms:.0f}ms", "success")
-                        
-                        return json_response({
-                            'status': 'success',
-                            'response_type': 'sql_result',
-                            'sql_query': sql_query,
-                            'database': database,
-                            'explanation': explanation,
-                            'rows': execution_result.get('rows', []),
-                            'row_count': rows,
-                            'execution_time': time_ms,
-                            'current_database': database
-                        })
-                    
-                except Exception as e:
-                    logger.error(f"[{request_id}] Error processing query: {e}", exc_info=True)
-                    await self._send_log_message(session_id, f"❌ Error: {str(e)}", "error")
+            # Now determine if it's a SQL query or natural language
+            is_sql = self._is_sql_query(message)
+            
+            if is_sql:
+                # Direct SQL query - no translation needed
+                await self._send_log_message(session_id, "✅ Detected direct SQL query", "info")
+                sql_query = message
+                explanation = "Direct SQL query execution"
+            else:
+                # Natural language - needs translation
+                if not self.sql_translator:
+                    await self._send_log_message(session_id, "❌ SQL translator not available", "error")
                     return json_response({
                         'status': 'error',
-                        'error': f'Query processing error: {str(e)}'
+                        'error': 'SQL translator not available. Please check Azure OpenAI configuration.'
                     })
-            else:
-                await self._send_log_message(session_id, "❌ SQL translator not available", "error")
+                
+                await self._send_log_message(session_id, "🤖 Translating natural language to SQL...", "info")
+                
+                # Get schema context
+                schema_context = await self._get_schema_context(database)
+                if schema_context:
+                    await self._send_log_message(session_id, f"📊 Schema context: {schema_context[:100]}...", "debug")
+                
+                # Translate
+                result = await self.sql_translator.translate_to_sql(
+                    message,
+                    database=database,
+                    schema_context=schema_context
+                )
+                
+                if result.error or not result.query:
+                    error_msg = result.error or 'Could not translate to SQL query'
+                    await self._send_log_message(session_id, f"❌ Translation failed: {error_msg}", "error")
+                    return json_response({
+                        'status': 'error',
+                        'error': error_msg
+                    })
+                
+                sql_query = result.query
+                explanation = result.explanation
+                await self._send_log_message(session_id, f"✅ Translated to SQL: {sql_query[:100]}...", "success")
+            
+            # Now execute the SQL query
+            if multi_db_mode and databases:
+                await self._send_log_message(session_id, f"🔄 Executing across {len(databases)} databases...", "info")
+                multi_results = await self._execute_multi_db_query_with_logging(sql_query, databases, session_id)
+                
+                # Count total results
+                total_rows = sum(r.get('row_count', 0) for r in multi_results)
+                total_time = sum(r.get('execution_time_ms', 0) for r in multi_results)
+                
+                await self._send_log_message(session_id, f"✅ Multi-DB execution complete: {total_rows} total rows in {total_time:.0f}ms", "success")
+                
                 return json_response({
-                    'status': 'error',
-                    'error': 'SQL translator not available. Please check Azure OpenAI configuration.'
+                    'status': 'success',
+                    'response_type': 'sql_result',
+                    'sql_query': sql_query,
+                    'explanation': explanation,
+                    'multi_db_results': multi_results,
+                    'total_rows': total_rows,
+                    'total_execution_time': total_time,
+                    'database_count': len(databases)
+                })
+            else:
+                await self._send_log_message(session_id, f"🔄 Executing query on {database}...", "info")
+                execution_result = await self._execute_sql_query_with_logging(sql_query, database, session_id)
+                
+                if execution_result.get('error'):
+                    await self._send_log_message(session_id, f"❌ Query failed: {execution_result['error']}", "error")
+                    return json_response({
+                        'status': 'error',
+                        'error': execution_result['error']
+                    })
+                
+                rows = execution_result.get('row_count', 0)
+                time_ms = execution_result.get('execution_time_ms', 0)
+                await self._send_log_message(session_id, f"✅ Query complete: {rows} rows in {time_ms:.0f}ms", "success")
+                
+                return json_response({
+                    'status': 'success',
+                    'response_type': 'sql_result',
+                    'sql_query': sql_query,
+                    'database': database,
+                    'explanation': explanation,
+                    'rows': execution_result.get('rows', []),
+                    'row_count': rows,
+                    'execution_time': time_ms,
+                    'current_database': database
                 })
                 
         except Exception as e:
@@ -220,9 +245,20 @@ class SQLConsole:
     
     def _is_sql_query(self, message: str) -> bool:
         """Check if message is a SQL query"""
-        sql_keywords = ['select', 'with', 'show', 'describe', 'exec', 'sp_']
+        sql_keywords = ['select', 'with', 'exec', 'execute', 'sp_']
         message_lower = message.lower().strip()
-        return any(message_lower.startswith(keyword) for keyword in sql_keywords)
+        
+        # Check for SQL keywords at the start
+        for keyword in sql_keywords:
+            if message_lower.startswith(keyword):
+                return True
+        
+        # Also check for common SQL patterns
+        sql_patterns = ['from ', 'where ', 'join ', 'group by', 'order by']
+        if any(pattern in message_lower for pattern in sql_patterns):
+            return True
+        
+        return False
     
     def _get_help_text(self) -> str:
         """Get help text for console"""
@@ -233,11 +269,13 @@ class SQLConsole:
 • "What's the total revenue by month?"
 • "Find products with low inventory"
 • "List all tables in the database"
+• "Show columns in table AD"
 
 **SQL Commands:**
 • SELECT, WITH, and other read queries
 • Direct SQL syntax supported
 • Use TOP to limit results (T-SQL syntax)
+• EXEC sp_tables, EXEC sp_databases, etc.
 
 **Special Commands:**
 • help - Show this help message
@@ -255,7 +293,7 @@ class SQLConsole:
 **Available Databases (MSI Access):**
 • master - System metadata
 • _support - Support database
-• demo - Demo database
+• demo - Demo database (contains tables like AD, BV, FA, etc.)
 
 **Tips:**
 • Click on a database to switch context
