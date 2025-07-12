@@ -1,17 +1,18 @@
-# sql_console_javascript.py - SQL Console JavaScript with Enhanced Logging
+// sql_console_javascript.py - Enhanced SQL Console JavaScript
 """
-SQL Console JavaScript - Enhanced with step-by-step logging and cancel functionality
+SQL Console JavaScript - Enhanced with multi-database support, copy logs, and standardization features
 """
 
 def get_sql_console_javascript():
-    """Return the JavaScript code for the SQL console with enhanced logging"""
+    """Return the enhanced JavaScript code for the SQL console"""
     return '''
-    let currentDatabase = 'master';
+    let currentDatabase = 'demo';  // Default to demo instead of master
     let isProcessing = false;
     let sessionId = generateSessionId();
     let multiDbMode = false;
     let selectedDatabases = new Set();
     let currentRequest = null;
+    let conversationLogs = [];  // Store all logs for export
 
     // Initialize
     window.onload = async function() {
@@ -25,11 +26,16 @@ def get_sql_console_javascript():
             this.style.height = this.scrollHeight + 'px';
         });
         
+        // Set default database to demo
+        currentDatabase = 'demo';
+        document.getElementById('currentDatabase').textContent = currentDatabase;
+        
         // Add initial log message
         addLogMessage('System initialized. Ready for queries.', 'success');
-        addLogMessage('Available databases: master, _support, demo', 'info');
+        addLogMessage('Available databases: _support, demo', 'info');
+        addLogMessage('Use multi-database mode for standardization checks', 'info');
         
-        // Don't auto-refresh databases - wait for user action
+        // Load databases
         await loadInitialDatabases();
     };
 
@@ -52,7 +58,14 @@ def get_sql_console_javascript():
 
     function quickCommand(command) {
         document.getElementById('messageInput').value = command;
-        sendMessage();
+        if (command === 'COMPARE SCHEMAS') {
+            // Auto-enable multi-database mode for schema comparison
+            if (!multiDbMode) {
+                document.getElementById('multiDbMode').checked = true;
+                toggleMultiDbMode();
+            }
+            addLogMessage('💡 Tip: Select databases to compare and add table name', 'info');
+        }
     }
 
     async function loadInitialDatabases() {
@@ -62,7 +75,6 @@ def get_sql_console_javascript():
         addLogMessage('Initializing database discovery...', 'info');
         
         try {
-            // Instead of hardcoding, fetch from server
             const response = await fetch('/console/api/databases');
             const result = await response.json();
             
@@ -78,7 +90,12 @@ def get_sql_console_javascript():
                         dbItem.classList.add('active');
                     }
                     
-                    dbItem.textContent = db;
+                    // Add database icon based on type
+                    let icon = '🗄️';
+                    if (db === '_support') icon = '🛠️';
+                    else if (db === 'demo') icon = '📊';
+                    
+                    dbItem.innerHTML = `<span class="db-icon">${icon}</span> ${db}`;
                     dbItem.onclick = () => {
                         if (!multiDbMode) {
                             selectDatabase(db);
@@ -88,57 +105,13 @@ def get_sql_console_javascript():
                     databaseList.appendChild(dbItem);
                 });
                 
-                addLogMessage(`Discovered ${result.databases.length} accessible databases: ${result.databases.join(', ')}`, 'success');
-            } else {
-                // Fallback to known databases
-                const knownDatabases = ['master', '_support', 'demo'];
-                knownDatabases.forEach(db => {
-                    const dbItem = document.createElement('div');
-                    dbItem.className = 'database-item';
-                    dbItem.setAttribute('data-db-name', db);
-                    
-                    if (db === currentDatabase) {
-                        dbItem.classList.add('active');
-                    }
-                    
-                    dbItem.textContent = db;
-                    dbItem.onclick = () => {
-                        if (!multiDbMode) {
-                            selectDatabase(db);
-                        }
-                    };
-                    
-                    databaseList.appendChild(dbItem);
-                });
+                addLogMessage(`Discovered ${result.databases.length} accessible databases`, 'success');
                 
-                addLogMessage('Using fallback database list', 'warning');
+                // Load tables for current database
+                await loadTables(currentDatabase);
             }
         } catch (error) {
             addLogMessage(`Error discovering databases: ${error.message}`, 'error');
-            addLogMessage('Using known accessible databases: master, _support, demo', 'info');
-            
-            // Fallback to known databases
-            const knownDatabases = ['master', '_support', 'demo'];
-            databaseList.innerHTML = '';
-            
-            knownDatabases.forEach(db => {
-                const dbItem = document.createElement('div');
-                dbItem.className = 'database-item';
-                dbItem.setAttribute('data-db-name', db);
-                
-                if (db === currentDatabase) {
-                    dbItem.classList.add('active');
-                }
-                
-                dbItem.textContent = db;
-                dbItem.onclick = () => {
-                    if (!multiDbMode) {
-                        selectDatabase(db);
-                    }
-                };
-                
-                databaseList.appendChild(dbItem);
-            });
         }
     }
 
@@ -177,9 +150,12 @@ def get_sql_console_javascript():
         if (!multiDbMode) {
             selectedDatabases.clear();
             updateSelectedDatabasesUI();
+        } else {
+            // Auto-select all databases for comparison
+            toggleAllDatabases();
         }
         
-        addLogMessage(multiDbMode ? 'Multi-database mode enabled' : 'Multi-database mode disabled', 'info');
+        addLogMessage(multiDbMode ? 'Multi-database mode enabled for comparisons' : 'Single database mode', 'info');
     }
 
     function toggleDatabaseSelection(dbName) {
@@ -238,6 +214,14 @@ def get_sql_console_javascript():
         logDiv.className = 'message bot log-message';
         
         const time = new Date().toLocaleTimeString();
+        const timestamp = new Date().toISOString();
+        
+        // Store log for export
+        conversationLogs.push({
+            timestamp: timestamp,
+            type: type,
+            message: message
+        });
         
         let icon = '';
         let color = '';
@@ -290,7 +274,8 @@ def get_sql_console_javascript():
             const requestData = {
                 message: message,
                 database: currentDatabase,
-                session_id: sessionId
+                session_id: sessionId,
+                analyze_results: true  // Enable AI analysis
             };
             
             // Add multi-database info if in multi-db mode
@@ -321,40 +306,27 @@ def get_sql_console_javascript():
             if (result.status === 'success') {
                 addLogMessage('Query processed successfully', 'success');
                 
-                // Add bot response
+                // Handle different response types
                 if (result.response_type === 'sql_result') {
                     if (result.sql_query) {
                         addLogMessage(`SQL Query executed: ${result.sql_query}`, 'info');
                     }
                     
                     if (result.multi_db_results) {
-                        const successCount = result.multi_db_results.filter(r => !r.error).length;
-                        addLogMessage(`Multi-DB results: ${successCount}/${result.multi_db_results.length} successful`, 'info');
-                        addMultiDbSQLResult(result);
+                        handleMultiDbResults(result);
                     } else {
-                        if (result.row_count !== undefined) {
-                            addLogMessage(`Query returned ${result.row_count} rows in ${result.execution_time}ms`, 'success');
-                        }
-                        addSQLResult(result);
+                        handleSingleDbResult(result);
                     }
+                } else if (result.response_type === 'analyzed_result') {
+                    handleAnalyzedResult(result);
+                } else if (result.response_type === 'schema_comparison') {
+                    handleSchemaComparison(result);
+                } else if (result.response_type === 'standardization_check') {
+                    handleStandardizationCheck(result);
                 } else if (result.response_type === 'help') {
                     addMessage(result.content, 'bot');
-                } else if (result.response_type === 'error') {
-                    addLogMessage(`Error: ${result.error}`, 'error');
-                    addErrorMessage(result.error);
                 } else {
-                    addMessage(result.content, 'bot');
-                }
-                
-                // Update current database if changed
-                if (result.current_database && result.current_database !== currentDatabase) {
-                    selectDatabase(result.current_database);
-                }
-                
-                // Refresh tables if needed
-                if (result.refresh_tables) {
-                    addLogMessage('Refreshing table list...', 'info');
-                    await loadTables(currentDatabase);
+                    addMessage(result.content || 'Query completed', 'bot');
                 }
             } else {
                 const errorMsg = result.error || 'An error occurred';
@@ -363,13 +335,8 @@ def get_sql_console_javascript():
             }
         } catch (error) {
             hideTypingIndicator();
-            if (error.name === 'AbortError') {
-                addLogMessage('Request cancelled by user', 'warning');
-                addErrorMessage('Request cancelled');
-            } else {
-                addLogMessage(`Connection error: ${error.message}`, 'error');
-                addErrorMessage('Connection error: ' + error.message);
-            }
+            addLogMessage(`Connection error: ${error.message}`, 'error');
+            addErrorMessage('Connection error: ' + error.message);
         } finally {
             isProcessing = false;
             document.getElementById('sendButton').disabled = false;
@@ -384,12 +351,119 @@ def get_sql_console_javascript():
         }
     }
 
+    function handleMultiDbResults(result) {
+        const successCount = result.multi_db_results.filter(r => !r.error).length;
+        addLogMessage(`Multi-DB results: ${successCount}/${result.multi_db_results.length} successful`, 'info');
+        addMultiDbSQLResult(result);
+    }
+
+    function handleSingleDbResult(result) {
+        if (result.row_count !== undefined) {
+            addLogMessage(`Query returned ${result.row_count} rows in ${result.execution_time}ms`, 'success');
+        }
+        addSQLResult(result);
+    }
+
+    function handleAnalyzedResult(result) {
+        // Add the SQL result first
+        if (result.multi_db_results) {
+            addMultiDbSQLResult(result);
+        }
+        
+        // Then add the analysis
+        if (result.analysis && result.analysis.analysis_text) {
+            addAnalysisResult(result.analysis);
+        }
+    }
+
+    function handleSchemaComparison(result) {
+        addSchemaComparisonResult(result);
+    }
+
+    function handleStandardizationCheck(result) {
+        addStandardizationResult(result);
+    }
+
+    function addAnalysisResult(analysis) {
+        const messagesContainer = document.getElementById('messagesContainer');
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message bot';
+        
+        const time = new Date().toLocaleTimeString();
+        
+        messageDiv.innerHTML = `
+            <div class="message-content">
+                <div class="message-header">🤖 AI Analysis • ${time}</div>
+                <div class="message-text">${escapeHtml(analysis.analysis_text)}</div>
+            </div>
+        `;
+        
+        messagesContainer.appendChild(messageDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    function addSchemaComparisonResult(result) {
+        const messagesContainer = document.getElementById('messagesContainer');
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message bot';
+        
+        const time = new Date().toLocaleTimeString();
+        
+        let content = `
+            <div class="message-content">
+                <div class="message-header">📊 Schema Comparison • ${time}</div>
+                <div class="message-text">Comparing table: ${result.table_name}</div>
+                <div class="sql-result">
+        `;
+        
+        // Show comparison results
+        if (result.comparison) {
+            content += '<div class="comparison-results">';
+            // Add comparison visualization here
+            content += '</div>';
+        }
+        
+        content += '</div></div>';
+        
+        messageDiv.innerHTML = content;
+        messagesContainer.appendChild(messageDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    function addStandardizationResult(result) {
+        const messagesContainer = document.getElementById('messagesContainer');
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message bot';
+        
+        const time = new Date().toLocaleTimeString();
+        
+        let content = `
+            <div class="message-content">
+                <div class="message-header">🔍 Standardization Check • ${time}</div>
+                <div class="sql-result">
+        `;
+        
+        if (result.analysis) {
+            content += '<h4>Database Compliance:</h4><ul>';
+            result.analysis.database_compliance.forEach(db => {
+                const score = Math.round(db.compliance_score * 100);
+                content += `<li>${db.database}: ${score}% compliant (schemas: ${db.schemas_found.join(', ')})</li>`;
+            });
+            content += '</ul>';
+        }
+        
+        content += '</div></div>';
+        
+        messageDiv.innerHTML = content;
+        messagesContainer.appendChild(messageDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
     async function cancelRequest() {
         if (currentRequest) {
             addLogMessage('Cancelling request...', 'warning');
             
             try {
-                // Send cancel request to server
                 await fetch('/console/api/cancel', {
                     method: 'POST',
                     headers: {
@@ -401,9 +475,67 @@ def get_sql_console_javascript():
                 console.error('Error sending cancel request:', e);
             }
             
-            // Note: Fetch API doesn't support true cancellation
-            // This is a placeholder for future WebSocket implementation
             addLogMessage('Cancel request sent to server', 'warning');
+        }
+    }
+
+    async function copyLogs() {
+        try {
+            // Create formatted text from logs
+            const logText = conversationLogs.map(log => {
+                const time = new Date(log.timestamp).toLocaleString();
+                return `[${time}] ${log.type.toUpperCase()}: ${log.message}`;
+            }).join('\\n');
+            
+            // Try to use clipboard API
+            if (navigator.clipboard) {
+                await navigator.clipboard.writeText(logText);
+                addLogMessage('Logs copied to clipboard!', 'success');
+            } else {
+                // Fallback for older browsers
+                const textarea = document.createElement('textarea');
+                textarea.value = logText;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                addLogMessage('Logs copied to clipboard!', 'success');
+            }
+        } catch (error) {
+            addLogMessage('Failed to copy logs: ' + error.message, 'error');
+        }
+    }
+
+    async function exportLogs() {
+        try {
+            const response = await fetch('/console/api/export-logs', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    logs: conversationLogs,
+                    format: 'text'
+                })
+            });
+            
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `sql_console_logs_${new Date().toISOString().split('T')[0]}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                
+                addLogMessage('Logs exported successfully', 'success');
+            } else {
+                addLogMessage('Failed to export logs', 'error');
+            }
+        } catch (error) {
+            addLogMessage('Export error: ' + error.message, 'error');
         }
     }
 
@@ -414,6 +546,13 @@ def get_sql_console_javascript():
         
         const time = new Date().toLocaleTimeString();
         const header = sender === 'user' ? 'You' : 'SQL Assistant';
+        
+        // Store message in logs
+        conversationLogs.push({
+            timestamp: new Date().toISOString(),
+            type: sender,
+            message: text
+        });
         
         messageDiv.innerHTML = `
             <div class="message-content">
@@ -496,7 +635,7 @@ def get_sql_console_javascript():
         let content = `
             <div class="message-content">
                 <div class="message-header">SQL Assistant • ${time}</div>
-                <div class="message-text">${escapeHtml(result.explanation || 'Multi-database query executed successfully')}</div>
+                <div class="message-text">${escapeHtml(result.explanation || 'Multi-database query executed')}</div>
                 <div class="sql-result">
                     <div class="sql-query">${escapeHtml(result.sql_query)}</div>
                     <div class="multi-db-results">
@@ -596,62 +735,8 @@ def get_sql_console_javascript():
         }
     }
 
-    async function refreshDatabases(forceRefresh = false) {
-        const databaseList = document.getElementById('databaseList');
-        databaseList.innerHTML = '<div class="loading-indicator">Loading databases...</div>';
-        
-        addLogMessage('Refreshing database list...', 'info');
-        
-        try {
-            const url = forceRefresh ? '/console/api/databases?force_refresh=true' : '/console/api/databases';
-            const response = await fetch(url);
-            const result = await response.json();
-            
-            if (result.status === 'success' && result.databases) {
-                databaseList.innerHTML = '';
-                
-                addLogMessage(`Found ${result.databases.length} accessible databases`, 'success');
-                
-                result.databases.forEach(db => {
-                    const dbItem = document.createElement('div');
-                    dbItem.className = 'database-item';
-                    dbItem.setAttribute('data-db-name', db);
-                    
-                    if (db === currentDatabase) {
-                        dbItem.classList.add('active');
-                    }
-                    
-                    dbItem.textContent = db;
-                    dbItem.onclick = () => {
-                        if (!multiDbMode) {
-                            selectDatabase(db);
-                        }
-                    };
-                    
-                    databaseList.appendChild(dbItem);
-                });
-                
-                // Re-apply multi-db mode if active
-                if (multiDbMode) {
-                    toggleMultiDbMode();
-                }
-                
-                if (result.databases.length === 0) {
-                    databaseList.innerHTML = '<div style="color: #666; font-size: 0.85rem;">No databases found</div>';
-                    addLogMessage('No accessible databases found', 'warning');
-                }
-                
-                if (result.note) {
-                    addLogMessage(result.note, 'info');
-                }
-            } else {
-                databaseList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Error loading databases</div>';
-                addLogMessage('Error loading databases', 'error');
-            }
-        } catch (error) {
-            databaseList.innerHTML = '<div style="color: #dc2626; font-size: 0.85rem;">Connection error</div>';
-            addLogMessage(`Connection error: ${error.message}`, 'error');
-        }
+    async function refreshDatabases() {
+        await loadInitialDatabases();
     }
 
     async function selectDatabase(dbName) {
@@ -695,15 +780,40 @@ def get_sql_console_javascript():
                 } else {
                     addLogMessage(`Found ${result.tables.length} tables in ${database}`, 'success');
                     
+                    // Group tables by schema
+                    const tablesBySchema = {};
                     result.tables.forEach(table => {
-                        const tableItem = document.createElement('div');
-                        tableItem.className = 'table-item';
-                        tableItem.textContent = table;
-                        tableItem.onclick = () => {
-                            document.getElementById('messageInput').value = `SELECT TOP 10 * FROM ${table}`;
-                            addLogMessage(`Query template created for table: ${table}`, 'info');
-                        };
-                        tableList.appendChild(tableItem);
+                        const parts = table.split('.');
+                        const schema = parts.length > 1 ? parts[0] : 'dbo';
+                        const tableName = parts.length > 1 ? parts[1] : table;
+                        
+                        if (!tablesBySchema[schema]) {
+                            tablesBySchema[schema] = [];
+                        }
+                        tablesBySchema[schema].push(tableName);
+                    });
+                    
+                    // Display tables grouped by schema
+                    Object.keys(tablesBySchema).sort().forEach(schema => {
+                        if (schema !== 'dbo' || Object.keys(tablesBySchema).length > 1) {
+                            const schemaHeader = document.createElement('div');
+                            schemaHeader.className = 'schema-header';
+                            schemaHeader.textContent = schema;
+                            schemaHeader.style.cssText = 'font-weight: bold; color: #3b82f6; margin: 10px 0 5px 0; font-size: 0.8rem;';
+                            tableList.appendChild(schemaHeader);
+                        }
+                        
+                        tablesBySchema[schema].sort().forEach(tableName => {
+                            const tableItem = document.createElement('div');
+                            tableItem.className = 'table-item';
+                            tableItem.textContent = tableName;
+                            tableItem.onclick = () => {
+                                const fullName = schema !== 'dbo' ? `${schema}.${tableName}` : tableName;
+                                document.getElementById('messageInput').value = `SELECT TOP 10 * FROM ${fullName}`;
+                                addLogMessage(`Query template created for table: ${fullName}`, 'info');
+                            };
+                            tableList.appendChild(tableItem);
+                        });
                     });
                 }
             } else {
@@ -722,25 +832,18 @@ def get_sql_console_javascript():
             const result = await response.json();
             
             if (result.status === 'success' && result.user) {
-                // Update user display
                 const userElement = document.getElementById('currentUser');
                 userElement.textContent = result.user.name || result.user.email || 'Unknown User';
                 
-                // Add title attribute for full details
                 if (result.user.sql_user) {
-                    userElement.title = `SQL User: ${result.user.sql_user}\\nAuth: ${result.user.auth_type || 'Microsoft'}`;
+                    userElement.title = `SQL User: ${result.user.sql_user}\\nAuth: ${result.user.auth_type || 'MSI'}`;
                 }
                 
                 addLogMessage(`Logged in as: ${result.user.name || result.user.sql_user}`, 'info');
-            } else {
-                document.getElementById('currentUser').textContent = 'Not authenticated';
-                addLogMessage('User authentication status: Not authenticated', 'warning');
             }
         } catch (error) {
             console.error('Error getting current user:', error);
             document.getElementById('currentUser').textContent = 'Authentication error';
-            addLogMessage('Error checking authentication status', 'error');
         }
     }
-   
     '''

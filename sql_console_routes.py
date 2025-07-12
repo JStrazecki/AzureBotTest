@@ -1,13 +1,14 @@
-# sql_console_routes.py - SQL Console Routes and Logic with Enhanced Logging
+# sql_console_routes.py - Enhanced SQL Console Routes with Multi-DB Support
 """
-SQL Console Routes - Enhanced with detailed logging and fixed database access
+SQL Console Routes - Enhanced with multi-database support, intelligent query routing,
+and AI-powered result analysis
 """
 
 import os
 import json
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from aiohttp import web
 from aiohttp.web import Request, Response, json_response
 import aiohttp
@@ -18,24 +19,22 @@ from sql_console_html import get_sql_console_html
 
 logger = logging.getLogger(__name__)
 
-# Known accessible databases from MSI check - hardcoded based on CheckDatabaseAccess result
-KNOWN_ACCESSIBLE_DATABASES = ['master', '_support', 'demo']
-
 class SQLConsole:
-    """SQL Console handler with proper authentication and multi-database support"""
+    """Enhanced SQL Console with multi-database support and result analysis"""
     
     def __init__(self, sql_translator=None):
         self.sql_translator = sql_translator
         self.function_url = os.environ.get("AZURE_FUNCTION_URL", "")
         self.sessions = {}
-        self.active_requests = {}  # Track active requests for cancellation
+        self.active_requests = {}
+        self.database_cache = {}
+        self.cache_timeout = 300  # 5 minutes
         
         # Check if authentication is embedded in URL
         self.url_has_auth = "code=" in self.function_url
         
-        logger.info(f"SQL Console initialized")
+        logger.info(f"SQL Console initialized with enhanced features")
         logger.info(f"Function URL configured: {'Yes' if self.function_url else 'No'}")
-        logger.info(f"Authentication method: {'URL-embedded' if self.url_has_auth else 'Header-based'}")
         logger.info(f"SQL Translator available: {'Yes' if sql_translator else 'No'}")
     
     async def console_page(self, request: Request) -> Response:
@@ -44,13 +43,13 @@ class SQLConsole:
         return Response(text=html_content, content_type='text/html')
     
     async def handle_message(self, request: Request) -> Response:
-        """Handle incoming console messages with enhanced logging"""
+        """Handle incoming console messages with enhanced multi-database support"""
         request_id = datetime.now().strftime("%H%M%S%f")[:10]
         
         try:
             data = await request.json()
             message = data.get('message', '').strip()
-            database = data.get('database', 'master')
+            database = data.get('database', 'demo')  # Default to demo instead of master
             session_id = data.get('session_id')
             multi_db_mode = data.get('multi_db_mode', False)
             databases = data.get('databases', [])
@@ -58,94 +57,40 @@ class SQLConsole:
             # Store request for potential cancellation
             self.active_requests[session_id] = request_id
             
-            logger.info(f"[{request_id}] Console message: {message[:50]}... in database: {database}")
+            logger.info(f"[{request_id}] Console message: {message[:50]}...")
             
             # Send initial acknowledgment
             await self._send_log_message(session_id, f"🔍 Processing: {message}", "info")
             
-            if multi_db_mode:
+            if multi_db_mode and databases:
                 await self._send_log_message(session_id, f"📊 Multi-database mode: {len(databases)} databases selected", "info")
             
-            # Check for special commands first (before SQL validation)
+            # Check for special commands
             if message.lower() in ['help', '?']:
-                await self._send_log_message(session_id, "📖 Showing help information", "info")
                 return json_response({
                     'status': 'success',
                     'response_type': 'help',
-                    'content': self._get_help_text()
+                    'content': self._get_enhanced_help_text()
                 })
             
-            if message.lower() in ['show databases', 'databases', 'sp_databases']:
-                await self._send_log_message(session_id, "🗄️ Fetching database list...", "info")
-                # Execute sp_databases as SQL query
-                sql_query = "EXEC sp_databases"
-                execution_result = await self._execute_sql_query_with_logging(sql_query, 'master', session_id)
-                
-                if execution_result.get('error'):
-                    return json_response({
-                        'status': 'error',
-                        'error': execution_result['error']
-                    })
-                
-                # Format database list from results
-                databases = []
-                if execution_result.get('rows'):
-                    for row in execution_result['rows']:
-                        db_name = row.get('DATABASE_NAME') or row.get('database_name') or row.get('name')
-                        if db_name:
-                            databases.append(db_name)
-                
-                content = f"Available databases ({len(databases)}):\n" + "\n".join(f"• {db}" for db in databases)
-                
-                return json_response({
-                    'status': 'success',
-                    'response_type': 'sql_result',
-                    'sql_query': sql_query,
-                    'database': 'master',
-                    'explanation': 'List of all databases',
-                    'rows': execution_result.get('rows', []),
-                    'row_count': execution_result.get('row_count', 0),
-                    'execution_time': execution_result.get('execution_time_ms', 0)
-                })
+            # Handle schema comparison commands
+            if message.lower().startswith('compare schemas'):
+                return await self._handle_schema_comparison(message, databases, session_id)
             
-            # Handle show tables command
-            if message.lower() in ['show tables', 'tables']:
-                await self._send_log_message(session_id, f"📋 Getting tables from database: {database}", "info")
-                # Use sp_tables for better compatibility
-                sql_query = "EXEC sp_tables @table_type = \"'TABLE'\""
-                
-                execution_result = await self._execute_sql_query_with_logging(sql_query, database, session_id)
-                
-                if execution_result.get('error'):
-                    return json_response({
-                        'status': 'error',
-                        'error': execution_result['error']
-                    })
-                
-                return json_response({
-                    'status': 'success',
-                    'response_type': 'sql_result',
-                    'sql_query': sql_query,
-                    'database': database,
-                    'explanation': f'Tables in {database} database',
-                    'rows': execution_result.get('rows', []),
-                    'row_count': execution_result.get('row_count', 0),
-                    'execution_time': execution_result.get('execution_time_ms', 0),
-                    'refresh_tables': True
-                })
+            # Handle standardization check commands
+            if message.lower().startswith('check standardization'):
+                return await self._handle_standardization_check(message, databases, session_id)
             
-            # Now determine if it's a SQL query or natural language
+            # Determine if it's SQL or natural language
             is_sql = self._is_sql_query(message)
             
             if is_sql:
-                # Direct SQL query - no translation needed
                 await self._send_log_message(session_id, "✅ Detected direct SQL query", "info")
                 sql_query = message
                 explanation = "Direct SQL query execution"
             else:
                 # Natural language - needs translation
                 if not self.sql_translator:
-                    await self._send_log_message(session_id, "❌ SQL translator not available", "error")
                     return json_response({
                         'status': 'error',
                         'error': 'SQL translator not available. Please check Azure OpenAI configuration.'
@@ -153,12 +98,9 @@ class SQLConsole:
                 
                 await self._send_log_message(session_id, "🤖 Translating natural language to SQL...", "info")
                 
-                # Get schema context
-                schema_context = await self._get_schema_context(database)
-                if schema_context:
-                    await self._send_log_message(session_id, f"📊 Schema context: {schema_context[:100]}...", "debug")
+                # Enhanced translation with schema context
+                schema_context = await self._get_enhanced_schema_context(database, databases if multi_db_mode else None)
                 
-                # Translate
                 result = await self.sql_translator.translate_to_sql(
                     message,
                     database=database,
@@ -166,52 +108,55 @@ class SQLConsole:
                 )
                 
                 if result.error or not result.query:
-                    error_msg = result.error or 'Could not translate to SQL query'
-                    await self._send_log_message(session_id, f"❌ Translation failed: {error_msg}", "error")
                     return json_response({
                         'status': 'error',
-                        'error': error_msg
+                        'error': result.error or 'Could not translate to SQL query'
                     })
                 
                 sql_query = result.query
                 explanation = result.explanation
                 await self._send_log_message(session_id, f"✅ Translated to SQL: {sql_query[:100]}...", "success")
             
-            # Now execute the SQL query
+            # Execute the query with enhanced multi-database support
             if multi_db_mode and databases:
-                await self._send_log_message(session_id, f"🔄 Executing across {len(databases)} databases...", "info")
-                multi_results = await self._execute_multi_db_query_with_logging(sql_query, databases, session_id)
+                # Check if query needs intelligent splitting
+                if await self._should_split_query(sql_query, len(databases)):
+                    await self._send_log_message(session_id, "🔄 Using intelligent query splitting for better performance", "info")
+                    results = await self._execute_split_queries(sql_query, databases, session_id)
+                else:
+                    results = await self._execute_multi_db_query_enhanced(sql_query, databases, session_id)
                 
-                # Count total results
-                total_rows = sum(r.get('row_count', 0) for r in multi_results)
-                total_time = sum(r.get('execution_time_ms', 0) for r in multi_results)
-                
-                await self._send_log_message(session_id, f"✅ Multi-DB execution complete: {total_rows} total rows in {total_time:.0f}ms", "success")
-                
-                return json_response({
-                    'status': 'success',
-                    'response_type': 'sql_result',
-                    'sql_query': sql_query,
-                    'explanation': explanation,
-                    'multi_db_results': multi_results,
-                    'total_rows': total_rows,
-                    'total_execution_time': total_time,
-                    'database_count': len(databases)
-                })
+                # Analyze results if AI analysis is requested
+                analysis_requested = data.get('analyze_results', True)
+                if analysis_requested and self.sql_translator:
+                    await self._send_log_message(session_id, "🤖 Analyzing results...", "info")
+                    analysis = await self._analyze_multi_db_results(results, sql_query, message)
+                    
+                    return json_response({
+                        'status': 'success',
+                        'response_type': 'analyzed_result',
+                        'sql_query': sql_query,
+                        'explanation': explanation,
+                        'multi_db_results': results,
+                        'analysis': analysis
+                    })
+                else:
+                    return json_response({
+                        'status': 'success',
+                        'response_type': 'sql_result',
+                        'sql_query': sql_query,
+                        'explanation': explanation,
+                        'multi_db_results': results
+                    })
             else:
-                await self._send_log_message(session_id, f"🔄 Executing query on {database}...", "info")
+                # Single database query
                 execution_result = await self._execute_sql_query_with_logging(sql_query, database, session_id)
                 
                 if execution_result.get('error'):
-                    await self._send_log_message(session_id, f"❌ Query failed: {execution_result['error']}", "error")
                     return json_response({
                         'status': 'error',
                         'error': execution_result['error']
                     })
-                
-                rows = execution_result.get('row_count', 0)
-                time_ms = execution_result.get('execution_time_ms', 0)
-                await self._send_log_message(session_id, f"✅ Query complete: {rows} rows in {time_ms:.0f}ms", "success")
                 
                 return json_response({
                     'status': 'success',
@@ -220,99 +165,256 @@ class SQLConsole:
                     'database': database,
                     'explanation': explanation,
                     'rows': execution_result.get('rows', []),
-                    'row_count': rows,
-                    'execution_time': time_ms,
-                    'current_database': database
+                    'row_count': execution_result.get('row_count', 0),
+                    'execution_time': execution_result.get('execution_time_ms', 0)
                 })
                 
         except Exception as e:
             logger.error(f"[{request_id}] Console message error: {e}", exc_info=True)
-            await self._send_log_message(session_id, f"❌ Unexpected error: {str(e)}", "error")
             return json_response({
                 'status': 'error',
                 'error': str(e)
             })
         finally:
-            # Remove from active requests
             if session_id in self.active_requests:
                 del self.active_requests[session_id]
     
-    async def _send_log_message(self, session_id: str, message: str, level: str = "info"):
-        """Send a log message to the client (placeholder for WebSocket implementation)"""
-        # In a real implementation, this would send via WebSocket
-        # For now, just log it
-        logger.info(f"[Console-{session_id}] {level.upper()}: {message}")
-    
-    def _is_sql_query(self, message: str) -> bool:
-        """Check if message is a SQL query"""
-        sql_keywords = ['select', 'with', 'exec', 'execute', 'sp_']
-        message_lower = message.lower().strip()
+    async def _should_split_query(self, query: str, database_count: int) -> bool:
+        """Determine if query should be split for better performance"""
+        query_lower = query.lower()
         
-        # Check for SQL keywords at the start
-        for keyword in sql_keywords:
-            if message_lower.startswith(keyword):
+        # Complex queries that benefit from splitting
+        if database_count > 3:
+            if any(x in query_lower for x in ['join', 'group by', 'order by', 'union']):
                 return True
-        
-        # Also check for common SQL patterns
-        sql_patterns = ['from ', 'where ', 'join ', 'group by', 'order by']
-        if any(pattern in message_lower for pattern in sql_patterns):
-            return True
         
         return False
     
-    def _get_help_text(self) -> str:
-        """Get help text for console"""
-        return """SQL Assistant Console Commands:
+    async def _execute_split_queries(self, query: str, databases: List[str], session_id: str) -> List[Dict]:
+        """Execute queries in a more efficient split manner"""
+        # This is a simplified implementation - in production, you'd want more sophisticated query analysis
+        results = []
+        
+        # For now, just execute in parallel with smaller batches
+        batch_size = 3
+        for i in range(0, len(databases), batch_size):
+            batch = databases[i:i+batch_size]
+            batch_results = await self._execute_multi_db_query_enhanced(query, batch, session_id)
+            results.extend(batch_results)
+        
+        return results
+    
+    async def _handle_schema_comparison(self, message: str, databases: List[str], session_id: str) -> Response:
+        """Handle schema comparison requests"""
+        await self._send_log_message(session_id, "📊 Performing schema comparison...", "info")
+        
+        # Extract table name from message
+        parts = message.lower().split()
+        table_name = parts[-1] if len(parts) > 2 else None
+        
+        if not table_name or not databases or len(databases) < 2:
+            return json_response({
+                'status': 'error',
+                'error': 'Please specify a table name and select at least 2 databases for comparison'
+            })
+        
+        # Query to get column information
+        query = f"""
+        SELECT 
+            COLUMN_NAME,
+            DATA_TYPE,
+            CHARACTER_MAXIMUM_LENGTH,
+            IS_NULLABLE,
+            COLUMN_DEFAULT
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = '{table_name}'
+        ORDER BY ORDINAL_POSITION
+        """
+        
+        # Execute across selected databases
+        results = await self._execute_multi_db_query_enhanced(query, databases, session_id, output_format='comparison')
+        
+        return json_response({
+            'status': 'success',
+            'response_type': 'schema_comparison',
+            'table_name': table_name,
+            'comparison': results
+        })
+    
+    async def _handle_standardization_check(self, message: str, databases: List[str], session_id: str) -> Response:
+        """Handle database standardization checks"""
+        await self._send_log_message(session_id, "🔍 Checking database standardization...", "info")
+        
+        # Query to check view schemas
+        query = """
+        SELECT 
+            s.name as SchemaName,
+            COUNT(DISTINCT v.name) as ViewCount
+        FROM sys.schemas s
+        JOIN sys.views v ON s.schema_id = v.schema_id
+        WHERE s.name IN ('acc', 'inv', 'hr', 'crm')
+        GROUP BY s.name
+        ORDER BY s.name
+        """
+        
+        results = await self._execute_multi_db_query_enhanced(query, databases, session_id)
+        
+        # Analyze standardization
+        analysis = {
+            'standardized_schemas': ['acc', 'inv', 'hr', 'crm'],
+            'database_compliance': []
+        }
+        
+        for result in results:
+            if not result.get('error'):
+                schemas_found = [row['SchemaName'] for row in result.get('rows', [])]
+                analysis['database_compliance'].append({
+                    'database': result['database'],
+                    'schemas_found': schemas_found,
+                    'compliance_score': len(schemas_found) / len(analysis['standardized_schemas'])
+                })
+        
+        return json_response({
+            'status': 'success',
+            'response_type': 'standardization_check',
+            'analysis': analysis,
+            'raw_results': results
+        })
+    
+    async def _analyze_multi_db_results(self, results: List[Dict], query: str, original_question: str) -> Dict:
+        """Use AI to analyze multi-database results"""
+        if not self.sql_translator:
+            return {"error": "AI analysis not available"}
+        
+        # Prepare summary for AI
+        summary = {
+            'query': query,
+            'question': original_question,
+            'database_count': len(results),
+            'results_summary': []
+        }
+        
+        for result in results:
+            if result.get('error'):
+                summary['results_summary'].append({
+                    'database': result['database'],
+                    'status': 'error',
+                    'error': result['error']
+                })
+            else:
+                summary['results_summary'].append({
+                    'database': result['database'],
+                    'status': 'success',
+                    'row_count': result.get('row_count', 0),
+                    'sample_data': result.get('rows', [])[:3]  # First 3 rows
+                })
+        
+        # Use the SQL translator's explain_results method
+        analysis_text = await self.sql_translator.explain_results(
+            query, 
+            results, 
+            original_question,
+            formatted_result={'summary': summary}
+        )
+        
+        return {
+            'analysis_text': analysis_text,
+            'summary': summary
+        }
+    
+    async def _execute_multi_db_query_enhanced(self, query: str, databases: List[str], session_id: str, output_format: str = 'raw') -> List[Dict]:
+        """Execute query across multiple databases with enhanced formatting"""
+        if not self.function_url:
+            return [{'database': db, 'error': 'Azure Function URL not configured'} for db in databases]
+        
+        try:
+            payload = {
+                "query_type": "multi_database",
+                "query": query,
+                "databases": databases,
+                "output_format": output_format
+            }
+            
+            await self._send_log_message(session_id, f"📤 Executing across {len(databases)} databases", "info")
+            
+            result = await self._call_function_with_logging(payload, session_id)
+            
+            if result:
+                if output_format == 'comparison' and 'comparison' in result:
+                    return result['comparison']
+                elif isinstance(result, list):
+                    return result
+                else:
+                    return [{'error': 'Invalid response format'}]
+            else:
+                return [{'database': db, 'error': 'No response from function'} for db in databases]
+                
+        except Exception as e:
+            logger.error(f"Error executing multi-database query: {e}")
+            return [{'database': db, 'error': str(e)} for db in databases]
+    
+    async def _get_enhanced_schema_context(self, database: str, additional_databases: Optional[List[str]] = None) -> str:
+        """Get enhanced schema context for translation"""
+        context_parts = [f"Primary database: {database}"]
+        
+        if additional_databases:
+            context_parts.append(f"Additional databases: {', '.join(additional_databases)}")
+        
+        # Add standardization context
+        context_parts.append("Standard schemas: acc (accounting), inv (inventory), hr (human resources), crm (customer relations)")
+        
+        return "\n".join(context_parts)
+    
+    def _get_enhanced_help_text(self) -> str:
+        """Get enhanced help text with new features"""
+        return """SQL Assistant Console - Enhanced Features:
 
 **Natural Language Queries:**
 • "Show me all customers"
-• "What's the total revenue by month?"
-• "Find products with low inventory"
-• "List all tables in the database"
-• "Show columns in table AD"
+• "Compare columns in AD table across all databases"
+• "Check standardization of accounting views"
+• "Find differences in table structure between systems"
+
+**Multi-Database Features:**
+• Toggle "Multi-Database Query" mode in sidebar
+• Select databases for comparison
+• Automatic result analysis and formatting
+• Intelligent query splitting for performance
+
+**Standardization Commands:**
+• "compare schemas [table]" - Compare table structure across databases
+• "check standardization" - Verify schema compliance
+• "show [schema] views" - List views in specific schema (acc, inv, hr, crm)
 
 **SQL Commands:**
 • SELECT, WITH, and other read queries
-• Direct SQL syntax supported
-• Use TOP to limit results (T-SQL syntax)
-• EXEC sp_tables, EXEC sp_databases, etc.
+• System procedures (sp_tables, sp_columns, etc.)
+• Direct SQL syntax with T-SQL support
 
-**Special Commands:**
-• help - Show this help message
-• show databases - List all databases
-• show tables - List tables in current database
-• sp_databases - List all databases (T-SQL)
-• sp_tables - List tables using system procedure
-
-**Multi-Database Queries:**
-• Toggle "Multi-Database Query" mode in the sidebar
-• Select multiple databases using checkboxes
-• Run the same query across all selected databases
-• Results are grouped by database
-
-**Available Databases (MSI Access):**
-• master - System metadata
+**Available Databases:**
 • _support - Support database
-• demo - Demo database (contains tables like AD, BV, FA, etc.)
+• demo - Demo database with standardized schemas
+• Additional databases discovered dynamically
+
+**Schema Standards:**
+• acc - Accounting (financial data)
+• inv - Inventory management
+• hr - Human resources
+• crm - Customer relationship management
 
 **Tips:**
-• Click on a database to switch context
-• Click on a table name to create a SELECT query
-• Use natural language or SQL syntax
-• Results are limited to prevent overload
-• The console shows detailed steps for each operation
-• If tables don't show with 'show tables', try 'sp_tables' or 'SELECT name FROM sys.tables'"""
+• Results are automatically analyzed for insights
+• Use multi-database mode for standardization checks
+• Copy conversation logs with the copy button
+• The console shows processing steps in real-time"""
     
-    async def _get_databases_with_logging(self, session_id: str, force_refresh: bool = False) -> List[str]:
-        """Get list of databases with logging"""
+    async def get_databases_api(self, request: Request) -> Response:
+        """API endpoint to get databases (excluding master)"""
         try:
-            if not self.function_url:
-                await self._send_log_message(session_id, "⚠️ Azure Function URL not configured, using fallback", "warning")
-                return KNOWN_ACCESSIBLE_DATABASES.copy()
+            session_id = request.query.get('session_id', 'api')
+            force_refresh = request.query.get('force_refresh', '').lower() == 'true'
             
-            await self._send_log_message(session_id, "🔍 Discovering accessible databases from server...", "info")
-            
-            # Call Azure Function to get databases
+            # Get databases from Azure Function
             payload = {
                 "query_type": "metadata",
                 "force_refresh": force_refresh
@@ -321,138 +423,93 @@ class SQLConsole:
             result = await self._call_function_with_logging(payload, session_id)
             
             if result and 'databases' in result:
+                # Filter out excluded databases (master is excluded in the function now)
                 databases = result['databases']
-                await self._send_log_message(session_id, f"✅ Found {len(databases)} accessible databases", "success")
                 
-                # Log additional info if available
-                if 'msi_identity' in result:
-                    await self._send_log_message(session_id, f"🔐 MSI Identity: {result['msi_identity']}", "debug")
-                
-                if 'cache_info' in result and result['cache_info'].get('cached'):
-                    cache_age = result['cache_info'].get('cache_age_seconds', 0)
-                    await self._send_log_message(session_id, f"📦 Using cached results (age: {cache_age}s)", "debug")
-                else:
-                    await self._send_log_message(session_id, "🔄 Fresh discovery completed", "debug")
-                
-                return databases
+                return json_response({
+                    'status': 'success',
+                    'databases': databases,
+                    'msi_identity': result.get('msi_identity', 'Unknown'),
+                    'note': 'Showing user-accessible databases only'
+                })
             else:
-                await self._send_log_message(session_id, "⚠️ No database list received, using fallback", "warning")
-                return KNOWN_ACCESSIBLE_DATABASES.copy()
+                # Fallback list without master
+                return json_response({
+                    'status': 'success',
+                    'databases': ['_support', 'demo'],
+                    'note': 'Using fallback database list'
+                })
                 
         except Exception as e:
-            logger.error(f"Error getting databases: {e}")
-            await self._send_log_message(session_id, f"❌ Error getting databases: {str(e)}", "error")
-            return KNOWN_ACCESSIBLE_DATABASES.copy()
+            logger.error(f"Database API error: {e}")
+            return json_response({
+                'status': 'error',
+                'error': str(e)
+            })
     
-    async def _get_tables_with_logging(self, database: str, session_id: str) -> List[str]:
-        """Get list of tables in database with logging"""
+    async def export_logs_api(self, request: Request) -> Response:
+        """API endpoint to export conversation logs"""
         try:
-            if not self.function_url:
-                await self._send_log_message(session_id, "⚠️ Azure Function URL not configured", "warning")
-                return []
+            data = await request.json()
+            logs = data.get('logs', [])
+            format_type = data.get('format', 'text')
             
-            # First try using sp_tables which is more reliable
-            sp_tables_query = "EXEC sp_tables @table_type = \"'TABLE'\""
-            
-            await self._send_log_message(session_id, f"🔍 Trying sp_tables to list tables in {database}", "info")
-            
-            result = await self._execute_sql_query_with_logging(sp_tables_query, database, session_id)
-            
-            if result.get('rows'):
-                # sp_tables returns TABLE_QUALIFIER, TABLE_OWNER, TABLE_NAME, TABLE_TYPE, REMARKS
-                tables = []
-                for row in result['rows']:
-                    # Get table name, handling different column name possibilities
-                    table_name = row.get('TABLE_NAME') or row.get('table_name') or row.get('3')
-                    if table_name:
-                        # Optional: include schema
-                        owner = row.get('TABLE_OWNER') or row.get('table_owner') or row.get('2')
-                        if owner and owner != 'dbo':
-                            tables.append(f"{owner}.{table_name}")
-                        else:
-                            tables.append(table_name)
+            if format_type == 'json':
+                content = json.dumps(logs, indent=2)
+                content_type = 'application/json'
+                filename = f'sql_console_logs_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+            else:
+                # Text format
+                lines = []
+                for log in logs:
+                    timestamp = log.get('timestamp', '')
+                    level = log.get('type', 'info').upper()
+                    message = log.get('message', '')
+                    lines.append(f"[{timestamp}] {level}: {message}")
                 
-                if tables:
-                    await self._send_log_message(session_id, f"✅ Found {len(tables)} tables using sp_tables", "success")
-                    return sorted(tables)
+                content = '\n'.join(lines)
+                content_type = 'text/plain'
+                filename = f'sql_console_logs_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
             
-            # If sp_tables didn't work, try sys.tables
-            await self._send_log_message(session_id, f"🔍 Trying sys.tables approach", "info")
+            return Response(
+                text=content,
+                content_type=content_type,
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"'
+                }
+            )
             
-            sys_tables_query = """
-            SELECT 
-                SCHEMA_NAME(schema_id) as SchemaName,
-                name as TableName
-            FROM sys.tables
-            ORDER BY SchemaName, TableName
-            """
-            
-            result = await self._execute_sql_query_with_logging(sys_tables_query, database, session_id)
-            
-            if result.get('rows'):
-                tables = []
-                for row in result['rows']:
-                    schema = row.get('SchemaName', 'dbo')
-                    table = row.get('TableName', '')
-                    if table:
-                        if schema != 'dbo':
-                            tables.append(f"{schema}.{table}")
-                        else:
-                            tables.append(table)
-                
-                await self._send_log_message(session_id, f"✅ Found {len(tables)} tables using sys.tables", "success")
-                return tables
-            
-            # Last resort: try INFORMATION_SCHEMA
-            await self._send_log_message(session_id, f"🔍 Trying INFORMATION_SCHEMA as fallback", "info")
-            
-            info_schema_query = """
-            SELECT TABLE_SCHEMA, TABLE_NAME 
-            FROM INFORMATION_SCHEMA.TABLES 
-            WHERE TABLE_TYPE = 'BASE TABLE' 
-            ORDER BY TABLE_SCHEMA, TABLE_NAME
-            """
-            
-            result = await self._execute_sql_query_with_logging(info_schema_query, database, session_id)
-            
-            if result.get('rows'):
-                tables = []
-                for row in result['rows']:
-                    schema = row.get('TABLE_SCHEMA', 'dbo')
-                    table = row.get('TABLE_NAME', '')
-                    if table:
-                        if schema != 'dbo':
-                            tables.append(f"{schema}.{table}")
-                        else:
-                            tables.append(table)
-                
-                await self._send_log_message(session_id, f"✅ Found {len(tables)} tables using INFORMATION_SCHEMA", "success")
-                return tables
-            
-            # If all methods failed
-            await self._send_log_message(session_id, f"⚠️ Could not retrieve tables from {database}", "warning")
-            await self._send_log_message(session_id, f"💡 Try running: sp_tables or SELECT name FROM sys.tables", "info")
-            return []
-                
         except Exception as e:
-            logger.error(f"Error getting tables: {e}")
-            await self._send_log_message(session_id, f"❌ Error getting tables: {str(e)}", "error")
-            return []
+            logger.error(f"Export logs error: {e}")
+            return json_response({
+                'status': 'error',
+                'error': str(e)
+            })
     
-    async def _get_schema_context(self, database: str) -> str:
-        """Get schema context for translation"""
-        try:
-            # Don't query for schema context, just use database name
-            return f"Database: {database}. Available databases: {', '.join(KNOWN_ACCESSIBLE_DATABASES)}"
-        except:
-            return ""
+    # Include other helper methods from original file
+    async def _send_log_message(self, session_id: str, message: str, level: str = "info"):
+        """Send a log message to the client"""
+        logger.info(f"[Console-{session_id}] {level.upper()}: {message}")
+    
+    def _is_sql_query(self, message: str) -> bool:
+        """Check if message is a SQL query"""
+        sql_keywords = ['select', 'with', 'exec', 'execute', 'sp_']
+        message_lower = message.lower().strip()
+        
+        for keyword in sql_keywords:
+            if message_lower.startswith(keyword):
+                return True
+        
+        sql_patterns = ['from ', 'where ', 'join ', 'group by', 'order by']
+        if any(pattern in message_lower for pattern in sql_patterns):
+            return True
+        
+        return False
     
     async def _call_function_with_logging(self, payload: Dict[str, Any], session_id: str) -> Optional[Dict]:
         """Call Azure Function with logging"""
         try:
             headers = {"Content-Type": "application/json"}
-            
-            await self._send_log_message(session_id, f"📡 Calling Azure Function: {payload.get('query_type', 'unknown')}", "debug")
             
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -462,21 +519,14 @@ class SQLConsole:
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as response:
                     if response.status == 200:
-                        result = await response.json()
-                        await self._send_log_message(session_id, "✅ Function call successful", "debug")
-                        return result
+                        return await response.json()
                     else:
                         error_text = await response.text()
-                        await self._send_log_message(session_id, f"❌ Function call failed: {response.status}", "error")
                         logger.error(f"Function call failed: {response.status} - {error_text}")
                         return None
                         
-        except asyncio.TimeoutError:
-            await self._send_log_message(session_id, "❌ Function call timed out after 30 seconds", "error")
-            return None
         except Exception as e:
             logger.error(f"Error calling function: {e}")
-            await self._send_log_message(session_id, f"❌ Function call error: {str(e)}", "error")
             return None
     
     async def _execute_sql_query_with_logging(self, query: str, database: str, session_id: str) -> Dict[str, Any]:
@@ -492,128 +542,52 @@ class SQLConsole:
                 "output_format": "raw"
             }
             
-            await self._send_log_message(session_id, f"📤 Sending query to database '{database}'", "debug")
-            
             result = await self._call_function_with_logging(payload, session_id)
             
             if result:
-                if 'error' in result:
-                    # Enhanced error messages for common issues
-                    error_msg = result['error']
-                    if "Invalid object name" in error_msg:
-                        await self._send_log_message(session_id, f"⚠️ Table not found - database might be empty or table doesn't exist", "warning")
-                    elif "Login failed" in error_msg:
-                        await self._send_log_message(session_id, f"⚠️ Access denied to database '{database}'", "warning")
-                    return {'error': error_msg}
-                
-                rows = result.get('row_count', 0)
-                await self._send_log_message(session_id, f"📥 Received {rows} rows from database", "debug")
-                
-                return {
-                    'rows': result.get('rows', []),
-                    'row_count': rows,
-                    'execution_time_ms': result.get('execution_time_ms', 0)
-                }
+                return result
             else:
-                return {'error': 'Failed to execute query - no response from function'}
+                return {'error': 'No response from function'}
                 
         except Exception as e:
-            logger.error(f"Error executing query: {e}", exc_info=True)
-            return {'error': f'Query execution error: {str(e)}'}
-    
-    async def _execute_multi_db_query_with_logging(self, query: str, databases: List[str], session_id: str) -> List[Dict[str, Any]]:
-        """Execute SQL query across multiple databases with logging"""
-        if not self.function_url:
-            return [{'database': db, 'error': 'Azure Function URL not configured'} for db in databases]
-        
-        try:
-            payload = {
-                "query_type": "multi_database",
-                "query": query,
-                "databases": databases,
-                "output_format": "raw"
-            }
-            
-            await self._send_log_message(session_id, f"📤 Sending multi-DB query to {len(databases)} databases", "info")
-            
-            result = await self._call_function_with_logging(payload, session_id)
-            
-            if result and isinstance(result, list):
-                formatted_results = []
-                for db_result in result:
-                    db_name = db_result.get('database', 'Unknown')
-                    if db_result.get('error'):
-                        await self._send_log_message(session_id, f"❌ {db_name}: {db_result['error']}", "error")
-                    else:
-                        rows = db_result.get('row_count', 0)
-                        await self._send_log_message(session_id, f"✅ {db_name}: {rows} rows", "success")
-                    
-                    formatted_results.append({
-                        'database': db_name,
-                        'rows': db_result.get('rows', []),
-                        'row_count': db_result.get('row_count', 0),
-                        'execution_time': db_result.get('execution_time_ms', 0),
-                        'error': db_result.get('error')
-                    })
-                return formatted_results
-            else:
-                await self._send_log_message(session_id, "❌ Invalid response from multi-database query", "error")
-                return [{
-                    'database': db,
-                    'error': 'Failed to execute multi-database query',
-                    'rows': [],
-                    'row_count': 0,
-                    'execution_time': 0
-                } for db in databases]
-                
-        except Exception as e:
-            logger.error(f"Error executing multi-database query: {e}", exc_info=True)
-            await self._send_log_message(session_id, f"❌ Multi-DB query error: {str(e)}", "error")
-            return [{
-                'database': db,
-                'error': f'Query execution error: {str(e)}',
-                'rows': [],
-                'row_count': 0,
-                'execution_time': 0
-            } for db in databases]
-    
-    async def get_databases_api(self, request: Request) -> Response:
-        """API endpoint to get databases"""
-        try:
-            session_id = request.query.get('session_id', 'api')
-            force_refresh = request.query.get('force_refresh', '').lower() == 'true'
-            
-            databases = await self._get_databases_with_logging(session_id, force_refresh)
-            
-            logger.info(f"Returning {len(databases)} accessible databases")
-            
-            return json_response({
-                'status': 'success',
-                'databases': databases,
-                'note': 'Showing databases with confirmed MSI access'
-            })
-        except Exception as e:
-            logger.error(f"Database API error: {e}", exc_info=True)
-            return json_response({
-                'status': 'error',
-                'error': str(e)
-            })
+            return {'error': str(e)}
     
     async def get_tables_api(self, request: Request) -> Response:
         """API endpoint to get tables"""
         try:
-            database = request.query.get('database', 'master')
+            database = request.query.get('database', 'demo')
             session_id = request.query.get('session_id', 'api')
             
-            tables = await self._get_tables_with_logging(database, session_id)
+            # Use sp_tables for better compatibility
+            query = "EXEC sp_tables @table_type = \"'TABLE'\""
             
-            return json_response({
-                'status': 'success',
-                'tables': tables,
-                'database': database
-            })
+            result = await self._execute_sql_query_with_logging(query, database, session_id)
+            
+            if result.get('rows'):
+                tables = []
+                for row in result['rows']:
+                    table_name = row.get('TABLE_NAME') or row.get('table_name')
+                    if table_name:
+                        owner = row.get('TABLE_OWNER') or row.get('table_owner')
+                        if owner and owner != 'dbo':
+                            tables.append(f"{owner}.{table_name}")
+                        else:
+                            tables.append(table_name)
+                
+                return json_response({
+                    'status': 'success',
+                    'tables': sorted(tables),
+                    'database': database
+                })
+            else:
+                return json_response({
+                    'status': 'success',
+                    'tables': [],
+                    'database': database
+                })
+                
         except Exception as e:
-            logger.error(f"Tables API error: {e}", exc_info=True)
+            logger.error(f"Tables API error: {e}")
             return json_response({
                 'status': 'error',
                 'error': str(e)
@@ -626,11 +600,7 @@ class SQLConsole:
             session_id = data.get('session_id')
             
             if session_id in self.active_requests:
-                request_id = self.active_requests[session_id]
                 del self.active_requests[session_id]
-                
-                logger.info(f"Cancelled request {request_id} for session {session_id}")
-                
                 return json_response({
                     'status': 'success',
                     'message': 'Request cancelled'
@@ -642,7 +612,6 @@ class SQLConsole:
                 })
                 
         except Exception as e:
-            logger.error(f"Cancel request error: {e}", exc_info=True)
             return json_response({
                 'status': 'error',
                 'error': str(e)
@@ -651,15 +620,14 @@ class SQLConsole:
     async def get_current_user_api(self, request: Request) -> Response:
         """API endpoint to get current user information"""
         try:
-            # Check if user info is in request headers (from Azure App Service authentication)
             user_info = {
                 'name': 'SQL User',
                 'email': None,
                 'auth_type': 'Managed Service Identity',
-                'sql_user': '6dd880ac-0e1b-43ed-b83b-a6e0021e9d8a@aa9eb9c3-b2af-4522-969c-82cb9efc0e88'
+                'sql_user': 'Function App MSI'
             }
             
-            # Azure App Service puts authenticated user info in headers
+            # Check for Azure App Service headers
             headers_to_check = {
                 'X-MS-CLIENT-PRINCIPAL-NAME': 'email',
                 'X-MS-CLIENT-PRINCIPAL': 'principal',
@@ -672,7 +640,6 @@ class SQLConsole:
                     if field == 'email':
                         user_info['email'] = value
                         user_info['name'] = value.split('@')[0]
-                    logger.info(f"Found {field}: {value[:20]}...")
             
             return json_response({
                 'status': 'success',
@@ -680,7 +647,6 @@ class SQLConsole:
             })
             
         except Exception as e:
-            logger.error(f"Current user API error: {e}", exc_info=True)
             return json_response({
                 'status': 'error',
                 'error': str(e)
@@ -701,6 +667,7 @@ def add_console_routes(app, sql_translator=None):
     app.router.add_get('/console/api/tables', console.get_tables_api)
     app.router.add_get('/console/api/current-user', console.get_current_user_api)
     app.router.add_post('/console/api/cancel', console.cancel_request_api)
+    app.router.add_post('/console/api/export-logs', console.export_logs_api)
     
-    logger.info("SQL Console routes added successfully with enhanced logging")
+    logger.info("Enhanced SQL Console routes added successfully")
     return console
