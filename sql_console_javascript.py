@@ -1,4 +1,4 @@
-// sql_console_javascript.py - Enhanced SQL Console JavaScript
+# sql_console_javascript.py - Enhanced SQL Console JavaScript
 """
 SQL Console JavaScript - Enhanced with multi-database support, copy logs, and standardization features
 """
