@@ -1,6 +1,7 @@
 # sql_console_javascript.py - Enhanced SQL Console JavaScript with Error Analysis UI
 """
 SQL Console JavaScript - Enhanced with intelligent error handling and fix suggestions
+Fixed multi-database mode and table loading issues
 """
 
 def get_sql_console_javascript():
@@ -99,18 +100,18 @@ def get_sql_console_javascript():
                     
                     dbItem.innerHTML = `<span class="db-icon">${icon}</span> ${db}`;
                     
-                    // FIXED: Always allow database selection for viewing tables
+                    // Handle click events properly
                     dbItem.onclick = (e) => {
-                        // Check if click was on checkbox
+                        // If clicking on a checkbox, let it handle its own event
                         if (e.target.classList.contains('database-checkbox')) {
-                            return; // Let checkbox handle its own click
+                            return;
                         }
                         
-                        // Always select database to view tables
+                        // Always select database for table viewing (regardless of multi-db mode)
                         selectDatabase(db);
                         
-                        // If in multi-db mode and not clicking checkbox, also toggle selection
-                        if (multiDbMode && !e.target.classList.contains('database-checkbox')) {
+                        // If in multi-db mode, also toggle selection
+                        if (multiDbMode) {
                             toggleDatabaseSelection(db);
                         }
                     };
@@ -1070,25 +1071,26 @@ def get_sql_console_javascript():
     }
 
     async function selectDatabase(dbName) {
-        currentDatabase = dbName;
-        document.getElementById('currentDatabase').textContent = dbName;
-        
-        // Update active state in list
-        document.querySelectorAll('.database-item').forEach(item => {
-            item.classList.remove('active');
-            if (item.getAttribute('data-db-name') === dbName) {
-                item.classList.add('active');
-            }
-        });
-        
-        // Load tables
-        await loadTables(dbName);
-        
-        // Add notification - FIXED: Only add notification if database actually changed
-        if (dbName !== currentDatabase || !document.querySelector('.table-item')) {
+        // Only update if actually changing database
+        if (currentDatabase !== dbName) {
+            currentDatabase = dbName;
+            document.getElementById('currentDatabase').textContent = dbName;
+            
+            // Update active state in list
+            document.querySelectorAll('.database-item').forEach(item => {
+                item.classList.remove('active');
+                if (item.getAttribute('data-db-name') === dbName) {
+                    item.classList.add('active');
+                }
+            });
+            
+            // Add notification
             addMessage(`Database changed to: ${dbName}`, 'bot');
             addLogMessage(`Switched to database: ${dbName}`, 'info');
         }
+        
+        // Always load tables for the selected database
+        await loadTables(dbName);
     }
 
     async function loadTables(database) {

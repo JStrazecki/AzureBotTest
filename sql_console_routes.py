@@ -1,6 +1,7 @@
 # sql_console_routes.py - Enhanced SQL Console Routes with Error Analysis
 """
 SQL Console Routes - Enhanced with intelligent error handling and query fixing
+Fixed table loading and multi-database mode issues
 """
 
 import os
@@ -515,86 +516,122 @@ class SQLConsole:
 - Real-time processing status updates
 - Query history for context-aware suggestions"""
     
-    # Include all other existing methods from the original file
     async def get_tables_api(self, request: Request) -> Response:
-        """API endpoint to get tables - with error handling"""
+        """API endpoint to get tables - with enhanced error handling"""
         try:
             database = request.query.get('database', 'demo')
             session_id = request.query.get('session_id', 'api')
             
             logger.info(f"Getting tables for database: {database}")
             
-            # Try multiple approaches to ensure we get tables
+            # Use multiple query approaches to ensure we get tables
             queries_to_try = [
-                # Method 1: Direct sp_tables call
-                "sp_tables",
-                # Method 2: INFORMATION_SCHEMA query
-                """SELECT TABLE_SCHEMA + '.' + TABLE_NAME as TABLE_NAME 
-                   FROM INFORMATION_SCHEMA.TABLES 
-                   WHERE TABLE_TYPE = 'BASE TABLE' 
-                   ORDER BY TABLE_SCHEMA, TABLE_NAME""",
-                # Method 3: sys tables query
-                """SELECT s.name + '.' + t.name as TABLE_NAME
-                   FROM sys.tables t
-                   JOIN sys.schemas s ON t.schema_id = s.schema_id
-                   WHERE t.type = 'U'
-                   ORDER BY s.name, t.name"""
+                # Method 1: Direct sp_tables call (fixed syntax)
+                {
+                    'query': 'sp_tables',
+                    'description': 'Using sp_tables procedure'
+                },
+                # Method 2: INFORMATION_SCHEMA with better formatting
+                {
+                    'query': """
+                        SELECT 
+                            CASE 
+                                WHEN TABLE_SCHEMA = 'dbo' THEN TABLE_NAME
+                                ELSE TABLE_SCHEMA + '.' + TABLE_NAME
+                            END as TABLE_NAME,
+                            TABLE_SCHEMA,
+                            TABLE_TYPE
+                        FROM INFORMATION_SCHEMA.TABLES 
+                        WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW')
+                        ORDER BY TABLE_SCHEMA, TABLE_NAME
+                    """,
+                    'description': 'Using INFORMATION_SCHEMA'
+                },
+                # Method 3: sys tables and views combined
+                {
+                    'query': """
+                        SELECT 
+                            CASE 
+                                WHEN s.name = 'dbo' THEN t.name
+                                ELSE s.name + '.' + t.name
+                            END as TABLE_NAME,
+                            s.name as TABLE_SCHEMA,
+                            'TABLE' as TABLE_TYPE
+                        FROM sys.tables t
+                        JOIN sys.schemas s ON t.schema_id = s.schema_id
+                        WHERE t.type = 'U'
+                        UNION ALL
+                        SELECT 
+                            CASE 
+                                WHEN s.name = 'dbo' THEN v.name
+                                ELSE s.name + '.' + v.name
+                            END as TABLE_NAME,
+                            s.name as TABLE_SCHEMA,
+                            'VIEW' as TABLE_TYPE
+                        FROM sys.views v
+                        JOIN sys.schemas s ON v.schema_id = s.schema_id
+                        WHERE v.type = 'V'
+                        ORDER BY TABLE_SCHEMA, TABLE_NAME
+                    """,
+                    'description': 'Using sys.tables and sys.views'
+                }
             ]
             
-            for query_idx, query in enumerate(queries_to_try):
-                logger.info(f"Trying query method {query_idx + 1}: {query[:50]}...")
+            tables = []
+            successful_method = None
+            
+            for query_info in queries_to_try:
+                logger.info(f"Trying method: {query_info['description']}")
                 
-                result = await self._execute_sql_query_with_logging(query, database, session_id)
+                result = await self._execute_sql_query_with_logging(
+                    query_info['query'], 
+                    database, 
+                    session_id
+                )
                 
-                if result.get('rows'):
-                    tables = []
-                    
-                    # Handle different result formats
+                if result.get('rows') and not result.get('error'):
+                    # Process the results based on the format
                     for row in result['rows']:
-                        # sp_tables format
-                        if 'TABLE_NAME' in row and row.get('TABLE_TYPE') == 'TABLE':
+                        # Handle different result formats
+                        if 'TABLE_NAME' in row:
                             table_name = row['TABLE_NAME']
-                            owner = row.get('TABLE_OWNER', 'dbo')
-                            
-                            # Build full table name
-                            if owner and owner != 'dbo':
-                                tables.append(f"{owner}.{table_name}")
-                            else:
-                                tables.append(table_name)
-                        
-                        # INFORMATION_SCHEMA or sys.tables format
-                        elif 'TABLE_NAME' in row and 'TABLE_TYPE' not in row:
-                            tables.append(row['TABLE_NAME'])
+                            if table_name and table_name.strip():
+                                # For sp_tables format, check TABLE_TYPE
+                                if 'TABLE_TYPE' in row:
+                                    table_type = row.get('TABLE_TYPE', '').strip()
+                                    if table_type in ['TABLE', 'VIEW', 'BASE TABLE']:
+                                        tables.append(table_name)
+                                else:
+                                    # For other formats, include all
+                                    tables.append(table_name)
                     
                     if tables:
-                        logger.info(f"Found {len(tables)} tables using method {query_idx + 1}")
-                        
-                        # Store successful tables in history
-                        self._add_to_query_history(session_id, {
-                            'type': 'table_discovery',
-                            'database': database,
-                            'tables_found': tables[:20]  # Store sample
-                        })
-                        
-                        return json_response({
-                            'status': 'success',
-                            'tables': sorted(list(set(tables))),  # Remove duplicates and sort
-                            'database': database,
-                            'method': f'query_method_{query_idx + 1}'
-                        })
+                        successful_method = query_info['description']
+                        logger.info(f"Found {len(tables)} tables using {successful_method}")
+                        break
                 
-                # If we get an error with sp_tables, try next method
+                # Log any errors for debugging
                 if result.get('error'):
-                    logger.warning(f"Method {query_idx + 1} failed: {result['error']}")
-                    continue
+                    logger.warning(f"Method '{query_info['description']}' failed: {result['error']}")
             
-            # If all methods fail, return empty list
-            logger.warning(f"No tables found in {database} after trying all methods")
+            # Remove duplicates and sort
+            tables = sorted(list(set(tables)))
+            
+            # Store successful tables in history
+            if tables:
+                self._add_to_query_history(session_id, {
+                    'type': 'table_discovery',
+                    'database': database,
+                    'tables_found': tables[:20],  # Store sample
+                    'method': successful_method
+                })
+            
             return json_response({
                 'status': 'success',
-                'tables': [],
+                'tables': tables,
                 'database': database,
-                'note': 'No tables found or access denied'
+                'method': successful_method or 'none',
+                'count': len(tables)
             })
                 
         except Exception as e:
@@ -604,7 +641,6 @@ class SQLConsole:
                 'error': str(e)
             })
     
-    # Include all other methods from the original file...
     async def _send_log_message(self, session_id: str, message: str, level: str = "info"):
         """Send a log message to the client"""
         logger.info(f"[Console-{session_id}] {level.upper()}: {message}")
@@ -766,13 +802,17 @@ class SQLConsole:
         """Handle database standardization checks"""
         await self._send_log_message(session_id, "🔍 Checking database standardization...", "info")
         
+        # If no databases selected in multi-db mode, use current database
+        if not databases:
+            databases = [self.sessions.get(session_id, {}).get('current_database', 'demo')]
+        
         # Query to check view schemas
         query = """
         SELECT 
             s.name as SchemaName,
             COUNT(DISTINCT v.name) as ViewCount
         FROM sys.schemas s
-        JOIN sys.views v ON s.schema_id = v.schema_id
+        LEFT JOIN sys.views v ON s.schema_id = v.schema_id
         WHERE s.name IN ('acc', 'inv', 'hr', 'crm')
         GROUP BY s.name
         ORDER BY s.name
@@ -793,6 +833,12 @@ class SQLConsole:
                     'database': result['database'],
                     'schemas_found': schemas_found,
                     'compliance_score': len(schemas_found) / len(analysis['standardized_schemas'])
+                })
+            else:
+                analysis['database_compliance'].append({
+                    'database': result['database'],
+                    'error': result['error'],
+                    'compliance_score': 0
                 })
         
         return json_response({
