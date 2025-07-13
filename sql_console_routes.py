@@ -1,7 +1,6 @@
 # sql_console_routes.py - Enhanced SQL Console Routes with Error Analysis
 """
 SQL Console Routes - Enhanced with intelligent error handling and query fixing
-Fixed table loading and multi-database mode issues
 """
 
 import os
@@ -524,114 +523,133 @@ class SQLConsole:
             
             logger.info(f"Getting tables for database: {database}")
             
-            # Use multiple query approaches to ensure we get tables
+            # Try multiple approaches to ensure we get tables
             queries_to_try = [
-                # Method 1: Direct sp_tables call (fixed syntax)
                 {
-                    'query': 'sp_tables',
-                    'description': 'Using sp_tables procedure'
-                },
-                # Method 2: INFORMATION_SCHEMA with better formatting
-                {
-                    'query': """
+                    "name": "INFORMATION_SCHEMA method",
+                    "query": """
                         SELECT 
-                            CASE 
-                                WHEN TABLE_SCHEMA = 'dbo' THEN TABLE_NAME
-                                ELSE TABLE_SCHEMA + '.' + TABLE_NAME
-                            END as TABLE_NAME,
                             TABLE_SCHEMA,
+                            TABLE_NAME,
                             TABLE_TYPE
                         FROM INFORMATION_SCHEMA.TABLES 
                         WHERE TABLE_TYPE IN ('BASE TABLE', 'VIEW')
                         ORDER BY TABLE_SCHEMA, TABLE_NAME
-                    """,
-                    'description': 'Using INFORMATION_SCHEMA'
+                    """
                 },
-                # Method 3: sys tables and views combined
                 {
-                    'query': """
+                    "name": "sys.objects method",
+                    "query": """
                         SELECT 
-                            CASE 
-                                WHEN s.name = 'dbo' THEN t.name
-                                ELSE s.name + '.' + t.name
-                            END as TABLE_NAME,
                             s.name as TABLE_SCHEMA,
-                            'TABLE' as TABLE_TYPE
-                        FROM sys.tables t
-                        JOIN sys.schemas s ON t.schema_id = s.schema_id
-                        WHERE t.type = 'U'
-                        UNION ALL
-                        SELECT 
-                            CASE 
-                                WHEN s.name = 'dbo' THEN v.name
-                                ELSE s.name + '.' + v.name
-                            END as TABLE_NAME,
-                            s.name as TABLE_SCHEMA,
-                            'VIEW' as TABLE_TYPE
-                        FROM sys.views v
-                        JOIN sys.schemas s ON v.schema_id = s.schema_id
-                        WHERE v.type = 'V'
-                        ORDER BY TABLE_SCHEMA, TABLE_NAME
-                    """,
-                    'description': 'Using sys.tables and sys.views'
+                            o.name as TABLE_NAME,
+                            CASE o.type 
+                                WHEN 'U' THEN 'TABLE'
+                                WHEN 'V' THEN 'VIEW'
+                            END as TABLE_TYPE
+                        FROM sys.objects o
+                        JOIN sys.schemas s ON o.schema_id = s.schema_id
+                        WHERE o.type IN ('U', 'V')
+                        ORDER BY s.name, o.name
+                    """
+                },
+                {
+                    "name": "sp_tables method",
+                    "query": "sp_tables"
                 }
             ]
             
-            tables = []
-            successful_method = None
-            
             for query_info in queries_to_try:
-                logger.info(f"Trying method: {query_info['description']}")
+                logger.info(f"Trying {query_info['name']}: {query_info['query'][:50]}...")
                 
-                result = await self._execute_sql_query_with_logging(
-                    query_info['query'], 
-                    database, 
-                    session_id
-                )
+                result = await self._execute_sql_query_with_logging(query_info['query'], database, session_id)
                 
                 if result.get('rows') and not result.get('error'):
-                    # Process the results based on the format
-                    for row in result['rows']:
-                        # Handle different result formats
-                        if 'TABLE_NAME' in row:
-                            table_name = row['TABLE_NAME']
-                            if table_name and table_name.strip():
-                                # For sp_tables format, check TABLE_TYPE
-                                if 'TABLE_TYPE' in row:
-                                    table_type = row.get('TABLE_TYPE', '').strip()
-                                    if table_type in ['TABLE', 'VIEW', 'BASE TABLE']:
-                                        tables.append(table_name)
-                                else:
-                                    # For other formats, include all
-                                    tables.append(table_name)
+                    tables = []
+                    views = []
                     
-                    if tables:
-                        successful_method = query_info['description']
-                        logger.info(f"Found {len(tables)} tables using {successful_method}")
-                        break
+                    # Process results based on the format
+                    for row in result['rows']:
+                        # Get table info based on available columns
+                        table_name = row.get('TABLE_NAME', '')
+                        schema = row.get('TABLE_SCHEMA', row.get('TABLE_OWNER', 'dbo'))
+                        table_type = row.get('TABLE_TYPE', 'TABLE')
+                        
+                        if not table_name:
+                            continue
+                        
+                        # Build full table name
+                        if schema and schema != 'dbo':
+                            full_name = f"{schema}.{table_name}"
+                        else:
+                            full_name = table_name
+                        
+                        # Separate tables and views
+                        if 'VIEW' in table_type.upper():
+                            views.append(full_name)
+                        else:
+                            tables.append(full_name)
+                    
+                    all_objects = tables + views
+                    
+                    if all_objects:
+                        logger.info(f"Found {len(tables)} tables and {len(views)} views using {query_info['name']}")
+                        
+                        # Store successful tables in history
+                        self._add_to_query_history(session_id, {
+                            'type': 'table_discovery',
+                            'database': database,
+                            'tables_found': all_objects[:20]  # Store sample
+                        })
+                        
+                        return json_response({
+                            'status': 'success',
+                            'tables': sorted(list(set(all_objects))),  # All objects
+                            'tables_only': sorted(tables),  # Just tables
+                            'views_only': sorted(views),    # Just views
+                            'database': database,
+                            'method': query_info['name'],
+                            'counts': {
+                                'tables': len(tables),
+                                'views': len(views),
+                                'total': len(all_objects)
+                            }
+                        })
                 
-                # Log any errors for debugging
+                # Log why this method didn't work
                 if result.get('error'):
-                    logger.warning(f"Method '{query_info['description']}' failed: {result['error']}")
+                    logger.warning(f"{query_info['name']} failed: {result['error']}")
             
-            # Remove duplicates and sort
-            tables = sorted(list(set(tables)))
+            # If all methods fail, try one more fallback
+            logger.warning(f"All standard methods failed for {database}, trying simplified query")
             
-            # Store successful tables in history
-            if tables:
-                self._add_to_query_history(session_id, {
-                    'type': 'table_discovery',
-                    'database': database,
-                    'tables_found': tables[:20],  # Store sample
-                    'method': successful_method
-                })
+            # Simplified query that should work on most SQL Server databases
+            fallback_query = "SELECT name FROM sys.sysobjects WHERE xtype IN ('U', 'V') ORDER BY name"
+            result = await self._execute_sql_query_with_logging(fallback_query, database, session_id)
             
+            if result.get('rows'):
+                tables = [row['name'] for row in result['rows'] if row.get('name')]
+                if tables:
+                    return json_response({
+                        'status': 'success',
+                        'tables': sorted(tables),
+                        'database': database,
+                        'method': 'sys.sysobjects fallback',
+                        'note': 'Used fallback method'
+                    })
+            
+            # If everything fails, return empty list with helpful message
+            logger.warning(f"No tables found in {database} after trying all methods")
             return json_response({
                 'status': 'success',
-                'tables': tables,
+                'tables': [],
                 'database': database,
-                'method': successful_method or 'none',
-                'count': len(tables)
+                'note': 'No accessible tables found. This could be due to permissions or an empty database.',
+                'suggestions': [
+                    'Check if the database contains any tables',
+                    'Verify MSI has SELECT permissions',
+                    'Try running: SELECT * FROM INFORMATION_SCHEMA.TABLES'
+                ]
             })
                 
         except Exception as e:
@@ -802,17 +820,13 @@ class SQLConsole:
         """Handle database standardization checks"""
         await self._send_log_message(session_id, "🔍 Checking database standardization...", "info")
         
-        # If no databases selected in multi-db mode, use current database
-        if not databases:
-            databases = [self.sessions.get(session_id, {}).get('current_database', 'demo')]
-        
         # Query to check view schemas
         query = """
         SELECT 
             s.name as SchemaName,
             COUNT(DISTINCT v.name) as ViewCount
         FROM sys.schemas s
-        LEFT JOIN sys.views v ON s.schema_id = v.schema_id
+        JOIN sys.views v ON s.schema_id = v.schema_id
         WHERE s.name IN ('acc', 'inv', 'hr', 'crm')
         GROUP BY s.name
         ORDER BY s.name
@@ -833,12 +847,6 @@ class SQLConsole:
                     'database': result['database'],
                     'schemas_found': schemas_found,
                     'compliance_score': len(schemas_found) / len(analysis['standardized_schemas'])
-                })
-            else:
-                analysis['database_compliance'].append({
-                    'database': result['database'],
-                    'error': result['error'],
-                    'compliance_score': 0
                 })
         
         return json_response({
