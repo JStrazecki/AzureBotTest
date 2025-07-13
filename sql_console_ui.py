@@ -1,10 +1,10 @@
-# sql_console_ui.py - SQL Console UI Components
+# sql_console_ui.py - SQL Console UI Components with Enhanced CSS
 """
-SQL Console UI - Separated HTML, CSS, and JavaScript with multi-database support
+SQL Console UI - Enhanced CSS for error analysis features
 """
 
 def get_sql_console_css():
-    """Return the CSS styles for the SQL console with multi-database support"""
+    """Return the CSS styles for the SQL console with error analysis styling"""
     return '''
     * {
         margin: 0;
@@ -272,6 +272,7 @@ def get_sql_console_css():
     .quick-actions {
         display: flex;
         gap: 0.5rem;
+        flex-wrap: wrap;
     }
 
     .quick-action {
@@ -467,6 +468,66 @@ def get_sql_console_css():
         margin-top: 0.5rem;
     }
 
+    /* Enhanced Error Analysis Styles */
+    .error-analysis {
+        background-color: rgba(99, 102, 241, 0.1);
+        border: 1px solid #6366f1;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin: 1rem 0;
+    }
+
+    .error-analysis h4 {
+        color: #6366f1;
+        margin-bottom: 0.5rem;
+        font-size: 1.1rem;
+    }
+
+    .error-analysis > div {
+        margin-bottom: 0.75rem;
+    }
+
+    .error-analysis strong {
+        color: #93bbfc;
+        display: inline-block;
+        margin-right: 0.5rem;
+    }
+
+    .db-error-analysis {
+        background-color: rgba(239, 68, 68, 0.1);
+        border: 1px solid #ef4444;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .db-error-analysis h5 {
+        color: #ef4444;
+        margin-bottom: 0.5rem;
+        font-size: 1rem;
+    }
+
+    /* Discovery result styles */
+    .discovery-results {
+        background-color: rgba(59, 130, 246, 0.1);
+        border: 1px solid #3b82f6;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        margin-top: 1rem;
+    }
+
+    /* Fixed query indicator */
+    .fixed-query-indicator {
+        display: inline-block;
+        background-color: #10b981;
+        color: white;
+        padding: 0.25rem 0.75rem;
+        border-radius: 0.375rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+        margin-left: 0.5rem;
+    }
+
     /* Input area */
     .input-area {
         padding: 1.5rem 2rem;
@@ -599,6 +660,12 @@ def get_sql_console_css():
         padding: 1rem;
     }
 
+    /* Log message styles */
+    .log-message .message-content {
+        border-left: 3px solid;
+        background-color: rgba(30, 41, 59, 0.5) !important;
+    }
+
     /* Scrollbar styling */
     ::-webkit-scrollbar {
         width: 8px;
@@ -630,6 +697,10 @@ def get_sql_console_css():
         
         .title {
             font-size: 1.25rem;
+        }
+        
+        .quick-actions {
+            flex-wrap: wrap;
         }
     }
     '''

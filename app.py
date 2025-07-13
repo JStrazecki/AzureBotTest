@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# app.py - Main SQL Assistant Application (Console-focused)
+# app.py - Main SQL Assistant Application with Enhanced Error Handling
 """
-SQL Assistant Application - Simplified for Console Testing
-Teams bot functionality will be added later
+SQL Assistant Application - Updated with Unified SQL Translator
+Now includes intelligent error analysis and query fixing
 """
 
 import os
@@ -83,14 +83,14 @@ async def aiohttp_error_middleware(request: Request, handler):
             "type": type(e).__name__
         }, status=500)
 
-# Initialize OpenAI translator if available
+# Initialize SQL translator if available
 SQL_TRANSLATOR = None
 if not missing_vars or all(var not in missing_vars for var in ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY"]):
     try:
-        # Import will be created in next artifact
-        from sql_translator_simple import SimpleSQLTranslator
-        SQL_TRANSLATOR = SimpleSQLTranslator()
-        logger.info("✓ SQL Translator initialized")
+        # Import the unified SQL translator
+        from sql_translator import SQLTranslator
+        SQL_TRANSLATOR = SQLTranslator()
+        logger.info("✓ Unified SQL Translator initialized with error analysis")
     except Exception as e:
         logger.error(f"❌ Failed to initialize SQL Translator: {e}")
 
@@ -100,7 +100,7 @@ async def health(req: Request) -> Response:
     try:
         health_status = {
             "status": "healthy",
-            "version": "2.0.0",
+            "version": "2.1.0",  # Updated version
             "timestamp": datetime.now().isoformat(),
             "environment": DEPLOYMENT_ENV,
             "services": {
@@ -109,8 +109,18 @@ async def health(req: Request) -> Response:
                 "sql_translator": "available" if SQL_TRANSLATOR else "not available",
                 "sql_function": "configured" if os.environ.get("AZURE_FUNCTION_URL") else "not configured"
             },
+            "features": {
+                "error_analysis": SQL_TRANSLATOR is not None,
+                "query_fixing": SQL_TRANSLATOR is not None,
+                "multi_database": True,
+                "standardization_checks": True
+            },
             "missing_vars": missing_vars
         }
+        
+        # Add token usage if available
+        if SQL_TRANSLATOR:
+            health_status["token_usage"] = SQL_TRANSLATOR.get_usage_summary()
         
         return json_response(health_status)
         
@@ -129,7 +139,7 @@ async def index(req: Request) -> Response:
     <!DOCTYPE html>
     <html>
     <head>
-        <title>SQL Assistant</title>
+        <title>SQL Assistant - Enhanced</title>
         <style>
             body {{
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -146,11 +156,34 @@ async def index(req: Request) -> Response:
                 border-radius: 16px;
                 box-shadow: 0 10px 30px rgba(0,0,0,0.2);
                 text-align: center;
-                max-width: 500px;
+                max-width: 600px;
             }}
             h1 {{
                 color: #333;
+                margin-bottom: 20px;
+            }}
+            .version {{
+                color: #666;
+                font-size: 14px;
                 margin-bottom: 30px;
+            }}
+            .features {{
+                text-align: left;
+                background: #f7f7f7;
+                padding: 20px;
+                border-radius: 8px;
+                margin-bottom: 30px;
+            }}
+            .features h3 {{
+                color: #667eea;
+                margin-top: 0;
+            }}
+            .features ul {{
+                margin: 10px 0;
+                padding-left: 20px;
+            }}
+            .features li {{
+                margin: 5px 0;
             }}
             .links {{
                 display: flex;
@@ -177,19 +210,47 @@ async def index(req: Request) -> Response:
                 border-radius: 8px;
                 font-size: 14px;
             }}
+            .new-badge {{
+                background: #10b981;
+                color: white;
+                padding: 2px 8px;
+                border-radius: 4px;
+                font-size: 12px;
+                margin-left: 5px;
+            }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>🤖 SQL Assistant</h1>
+            <div class="version">Version 2.1.0 - Enhanced with Error Analysis</div>
+            
+            <div class="features">
+                <h3>✨ What's New</h3>
+                <ul>
+                    <li>🔧 <strong>Intelligent Error Analysis</strong> <span class="new-badge">NEW</span><br>
+                        When queries fail, get detailed analysis and fix suggestions</li>
+                    <li>🤖 <strong>Automatic Query Fixing</strong> <span class="new-badge">NEW</span><br>
+                        One-click application of suggested fixes</li>
+                    <li>🔍 <strong>Discovery Queries</strong> <span class="new-badge">NEW</span><br>
+                        Find correct table and column names easily</li>
+                    <li>📊 <strong>Database Standardization</strong><br>
+                        Check schema compliance across systems</li>
+                    <li>🗄️ <strong>Multi-Database Support</strong><br>
+                        Compare and analyze across multiple databases</li>
+                </ul>
+            </div>
+            
             <div class="links">
                 <a href="/console">SQL Console</a>
                 <a href="/admin">Admin Dashboard</a>
                 <a href="/health">Health Status</a>
             </div>
+            
             <div class="status">
                 Environment: {DEPLOYMENT_ENV}<br>
-                SQL Translator: {'✅ Ready' if SQL_TRANSLATOR else '❌ Not Available'}
+                SQL Translator: {'✅ Ready with Error Analysis' if SQL_TRANSLATOR else '❌ Not Available'}<br>
+                Token Usage: {'Check /health for details' if SQL_TRANSLATOR else 'N/A'}
             </div>
         </div>
     </body>
@@ -213,19 +274,20 @@ try:
 except ImportError as e:
     logger.error(f"❌ Failed to add admin dashboard: {e}")
 
-# Import and add SQL console
+# Import and add SQL console with enhanced error handling
 try:
     from sql_console_routes import add_console_routes
     add_console_routes(APP, SQL_TRANSLATOR)
-    logger.info("✓ SQL console routes added")
+    logger.info("✓ Enhanced SQL console routes added with error analysis")
 except ImportError as e:
     logger.error(f"❌ Failed to add SQL console: {e}")
 
 # Startup tasks
 async def on_startup(app):
     """Perform startup tasks"""
-    logger.info("=== SQL Assistant Startup ===")
+    logger.info("=== SQL Assistant Enhanced Startup ===")
     logger.info(f"Environment: {DEPLOYMENT_ENV}")
+    logger.info("Features: Error Analysis, Query Fixing, Discovery Queries")
     
     if missing_vars:
         logger.warning(f"⚠️ Missing environment variables: {', '.join(missing_vars)}")
@@ -233,7 +295,7 @@ async def on_startup(app):
         logger.info("✓ All required environment variables are set")
     
     # Create necessary directories
-    dirs = ['.token_usage', 'logs']
+    dirs = ['.token_usage', 'logs', '.query_history', '.error_logs']
     for dir_name in dirs:
         try:
             os.makedirs(dir_name, exist_ok=True)
@@ -246,6 +308,11 @@ async def on_startup(app):
 async def on_cleanup(app):
     """Perform cleanup tasks"""
     logger.info("SQL Assistant shutting down...")
+    
+    # Save token usage if available
+    if SQL_TRANSLATOR:
+        usage = SQL_TRANSLATOR.get_usage_summary()
+        logger.info(f"Final token usage: {usage['total_tokens']} tokens, ${usage['estimated_cost']:.4f}")
 
 # Register startup and cleanup handlers
 APP.on_startup.append(on_startup)
@@ -253,7 +320,7 @@ APP.on_cleanup.append(on_cleanup)
 
 # Add additional utility routes
 async def test_sql_translation(req: Request) -> Response:
-    """Test endpoint for SQL translation"""
+    """Test endpoint for SQL translation with error analysis"""
     try:
         data = await req.json()
         query = data.get('query', 'show me all tables')
@@ -272,6 +339,7 @@ async def test_sql_translation(req: Request) -> Response:
             'database': result.database,
             'explanation': result.explanation,
             'confidence': result.confidence,
+            'warnings': result.warnings,
             'error': result.error
         })
     except Exception as e:
@@ -280,29 +348,82 @@ async def test_sql_translation(req: Request) -> Response:
             'error': str(e)
         }, status=500)
 
-# Add test route
+async def test_error_analysis(req: Request) -> Response:
+    """Test endpoint for error analysis"""
+    try:
+        data = await req.json()
+        
+        if not SQL_TRANSLATOR:
+            return json_response({
+                'status': 'error',
+                'error': 'SQL Translator not available'
+            })
+        
+        analysis = await SQL_TRANSLATOR.analyze_sql_error(
+            original_query=data.get('query', ''),
+            error_message=data.get('error', ''),
+            database=data.get('database', 'demo'),
+            user_intent=data.get('user_intent')
+        )
+        
+        return json_response({
+            'status': 'success',
+            'error_type': analysis.error_type,
+            'explanation': analysis.explanation,
+            'suggested_fix': analysis.suggested_fix,
+            'fixed_query': analysis.fixed_query,
+            'confidence': analysis.confidence,
+            'alternatives': analysis.alternative_queries,
+            'discovery_queries': analysis.discovery_queries
+        })
+    except Exception as e:
+        return json_response({
+            'status': 'error',
+            'error': str(e)
+        }, status=500)
+
+# Add test routes
 APP.router.add_post("/api/test-translation", test_sql_translation)
+APP.router.add_post("/api/test-error-analysis", test_error_analysis)
 
 # Simple info endpoint
 async def info(req: Request) -> Response:
     """Information about the application"""
-    return json_response({
-        'name': 'SQL Assistant',
-        'version': '2.0.0',
+    info_data = {
+        'name': 'SQL Assistant Enhanced',
+        'version': '2.1.0',
         'features': [
             'SQL Console with natural language support',
+            'Intelligent error analysis and query fixing',
+            'Multi-database standardization checks',
+            'Discovery queries for finding correct object names',
             'Admin Dashboard with system monitoring',
-            'Azure OpenAI integration',
+            'Azure OpenAI integration with token tracking',
             'Azure SQL Function connectivity'
+        ],
+        'new_features': [
+            'Error analysis when queries fail',
+            'One-click query fixes',
+            'Alternative query suggestions',
+            'Discovery queries to find tables/columns',
+            'Enhanced multi-database support'
         ],
         'endpoints': [
             {'path': '/', 'description': 'Home page'},
-            {'path': '/console', 'description': 'SQL Console'},
+            {'path': '/console', 'description': 'SQL Console with error handling'},
             {'path': '/admin', 'description': 'Admin Dashboard'},
-            {'path': '/health', 'description': 'Health check'},
-            {'path': '/info', 'description': 'This endpoint'}
+            {'path': '/health', 'description': 'Health check with token usage'},
+            {'path': '/info', 'description': 'This endpoint'},
+            {'path': '/api/test-translation', 'description': 'Test SQL translation'},
+            {'path': '/api/test-error-analysis', 'description': 'Test error analysis'}
         ]
-    })
+    }
+    
+    # Add token usage if available
+    if SQL_TRANSLATOR:
+        info_data['token_usage'] = SQL_TRANSLATOR.get_usage_summary()
+    
+    return json_response(info_data)
 
 APP.router.add_get("/info", info)
 
@@ -310,16 +431,18 @@ APP.router.add_get("/info", info)
 if __name__ == "__main__":
     try:
         PORT = int(os.environ.get("PORT", 8000))
-        logger.info(f"Starting application on port {PORT}")
+        logger.info(f"Starting enhanced application on port {PORT}")
         logger.info(f"Access the application at: http://localhost:{PORT}")
         
         # Log available endpoints
         logger.info("Available endpoints:")
         logger.info("  - / (Home)")
-        logger.info("  - /console (SQL Console)")
+        logger.info("  - /console (SQL Console with Error Analysis)")
         logger.info("  - /admin (Admin Dashboard)")
         logger.info("  - /health (Health Check)")
         logger.info("  - /info (Application Info)")
+        logger.info("  - /api/test-translation (Test Translation)")
+        logger.info("  - /api/test-error-analysis (Test Error Analysis)")
         
         web.run_app(
             APP,

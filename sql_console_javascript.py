@@ -1,10 +1,10 @@
-# sql_console_javascript.py - Enhanced SQL Console JavaScript
+# sql_console_javascript.py - Enhanced SQL Console JavaScript with Error Analysis UI
 """
-SQL Console JavaScript - Fixed multi-database mode table loading issue
+SQL Console JavaScript - Enhanced with intelligent error handling and fix suggestions
 """
 
 def get_sql_console_javascript():
-    """Return the enhanced JavaScript code for the SQL console"""
+    """Return the enhanced JavaScript code for the SQL console with error analysis"""
     return '''
     let currentDatabase = 'demo';  // Default to demo instead of master
     let isProcessing = false;
@@ -13,6 +13,7 @@ def get_sql_console_javascript():
     let selectedDatabases = new Set();
     let currentRequest = null;
     let conversationLogs = [];  // Store all logs for export
+    let lastErrorAnalysis = null;  // Store last error analysis for reference
 
     // Initialize
     window.onload = async function() {
@@ -33,6 +34,7 @@ def get_sql_console_javascript():
         // Add initial log message
         addLogMessage('System initialized. Ready for queries.', 'success');
         addLogMessage('Available databases: _support, demo', 'info');
+        addLogMessage('✨ NEW: If a query fails, I will analyze the error and suggest fixes!', 'info');
         addLogMessage('Use multi-database mode for standardization checks', 'info');
         
         // Load databases
@@ -328,6 +330,12 @@ def get_sql_console_javascript():
                     } else {
                         handleSingleDbResult(result);
                     }
+                } else if (result.response_type === 'sql_result_with_errors') {
+                    // Handle multi-database results with errors
+                    handleMultiDbResultsWithErrors(result);
+                } else if (result.response_type === 'sql_error_with_analysis') {
+                    // Handle single database error with analysis
+                    handleSqlErrorWithAnalysis(result);
                 } else if (result.response_type === 'analyzed_result') {
                     handleAnalyzedResult(result);
                 } else if (result.response_type === 'schema_comparison') {
@@ -359,6 +367,313 @@ def get_sql_console_javascript():
             
             currentRequest = null;
             input.focus();
+        }
+    }
+
+    function handleSqlErrorWithAnalysis(result) {
+        const messagesContainer = document.getElementById('messagesContainer');
+        const messageDiv = document.createElement('div');
+        messageDiv.className = 'message bot';
+        
+        const time = new Date().toLocaleTimeString();
+        const analysis = result.error_analysis;
+        lastErrorAnalysis = analysis;  // Store for reference
+        
+        let content = `
+            <div class="message-content">
+                <div class="message-header">SQL Assistant • ${time}</div>
+                <div class="message-text">Query failed on database: ${result.database}</div>
+                
+                <div class="error-message" style="margin: 1rem 0;">
+                    <strong>Error:</strong> ${escapeHtml(result.error)}
+                </div>
+                
+                <div class="error-analysis" style="background-color: rgba(99, 102, 241, 0.1); border: 1px solid #6366f1; border-radius: 0.5rem; padding: 1rem; margin: 1rem 0;">
+                    <h4 style="color: #6366f1; margin-bottom: 0.5rem;">🤖 Error Analysis</h4>
+                    
+                    <div style="margin-bottom: 0.75rem;">
+                        <strong>Error Type:</strong> ${escapeHtml(analysis.error_type)}
+                    </div>
+                    
+                    <div style="margin-bottom: 0.75rem;">
+                        <strong>Explanation:</strong> ${escapeHtml(analysis.explanation)}
+                    </div>
+                    
+                    <div style="margin-bottom: 0.75rem;">
+                        <strong>Suggested Fix:</strong> ${escapeHtml(analysis.suggested_fix)}
+                    </div>
+                    
+                    <div style="margin-bottom: 0.75rem;">
+                        <strong>Fixed Query:</strong>
+                        <div class="sql-query" style="margin-top: 0.5rem;">${escapeHtml(analysis.fixed_query)}</div>
+                    </div>
+                    
+                    <div style="display: flex; gap: 0.5rem; margin-top: 1rem;">
+                        <button class="quick-action" onclick="applyErrorFix('${escapeHtml(JSON.stringify({
+                            fixed_query: analysis.fixed_query,
+                            database: result.database
+                        }).replace(/"/g, '&quot;'))}')">
+                            🔧 Apply Fix
+                        </button>
+        `;
+        
+        // Add alternative queries if available
+        if (analysis.alternative_queries && analysis.alternative_queries.length > 0) {
+            content += `
+                        <button class="quick-action" onclick="showAlternativeQueries()">
+                            🔄 Show Alternatives (${analysis.alternative_queries.length})
+                        </button>
+            `;
+        }
+        
+        // Add discovery queries if available
+        if (analysis.discovery_queries && analysis.discovery_queries.length > 0) {
+            content += `
+                        <button class="quick-action" onclick="showDiscoveryQueries()">
+                            🔍 Discovery Queries (${analysis.discovery_queries.length})
+                        </button>
+            `;
+        }
+        
+        content += `
+                    </div>
+                </div>
+                
+                <div style="margin-top: 1rem;">
+                    <div class="sql-query">${escapeHtml(result.sql_query)}</div>
+                </div>
+            </div>
+        `;
+        
+        messageDiv.innerHTML = content;
+        messagesContainer.appendChild(messageDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        
+        addLogMessage(`Error analyzed: ${analysis.error_type} - Confidence: ${(analysis.confidence * 100).toFixed(0)}%`, 'info');
+    }
+
+    function handleMultiDbResultsWithErrors(result) {
+        // First show the regular multi-db results
+        addMultiDbSQLResult(result);
+        
+        // Then add error analysis for failed databases
+        if (result.error_analysis && result.error_analysis.length > 0) {
+            const messagesContainer = document.getElementById('messagesContainer');
+            const analysisDiv = document.createElement('div');
+            analysisDiv.className = 'message bot';
+            
+            const time = new Date().toLocaleTimeString();
+            
+            let content = `
+                <div class="message-content">
+                    <div class="message-header">🤖 Error Analysis • ${time}</div>
+                    <div class="message-text">Found errors in ${result.error_analysis.length} database(s). Here's the analysis:</div>
+                    
+                    <div style="margin-top: 1rem;">
+            `;
+            
+            result.error_analysis.forEach((analysis, idx) => {
+                content += `
+                    <div class="db-error-analysis" style="background-color: rgba(239, 68, 68, 0.1); border: 1px solid #ef4444; border-radius: 0.5rem; padding: 1rem; margin-bottom: 1rem;">
+                        <h5 style="color: #ef4444; margin-bottom: 0.5rem;">Database: ${escapeHtml(analysis.database)}</h5>
+                        
+                        <div style="font-size: 0.875rem;">
+                            <div><strong>Error Type:</strong> ${escapeHtml(analysis.error_type)}</div>
+                            <div><strong>Explanation:</strong> ${escapeHtml(analysis.explanation)}</div>
+                            <div><strong>Fix:</strong> ${escapeHtml(analysis.suggested_fix)}</div>
+                        </div>
+                        
+                        <button class="quick-action" style="margin-top: 0.5rem;" onclick="applyErrorFix('${escapeHtml(JSON.stringify({
+                            fixed_query: analysis.fixed_query,
+                            database: analysis.database,
+                            multi_db_mode: true,
+                            databases: Array.from(selectedDatabases)
+                        }).replace(/"/g, '&quot;'))}')">
+                            🔧 Fix for ${escapeHtml(analysis.database)}
+                        </button>
+                    </div>
+                `;
+            });
+            
+            content += `
+                    </div>
+                </div>
+            `;
+            
+            analysisDiv.innerHTML = content;
+            messagesContainer.appendChild(analysisDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+    }
+
+    async function applyErrorFix(dataJson) {
+        try {
+            const data = JSON.parse(dataJson.replace(/&quot;/g, '"'));
+            
+            addLogMessage(`Applying error fix to database: ${data.database}`, 'info');
+            showTypingIndicator();
+            
+            const response = await fetch('/console/api/apply-fix', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    ...data
+                })
+            });
+            
+            const result = await response.json();
+            hideTypingIndicator();
+            
+            if (result.status === 'success') {
+                addLogMessage('✅ Fixed query executed successfully!', 'success');
+                
+                // Show a message indicating this was a fixed query
+                const fixedMessage = document.createElement('div');
+                fixedMessage.className = 'message bot';
+                fixedMessage.innerHTML = `
+                    <div class="message-content" style="border-left: 3px solid #10b981;">
+                        <div class="message-header">🔧 Fixed Query Result • ${new Date().toLocaleTimeString()}</div>
+                        <div class="message-text">The error was fixed and the query executed successfully!</div>
+                    </div>
+                `;
+                document.getElementById('messagesContainer').appendChild(fixedMessage);
+                
+                // Handle the result based on type
+                if (result.response_type === 'sql_result') {
+                    if (result.multi_db_results) {
+                        handleMultiDbResults(result);
+                    } else {
+                        handleSingleDbResult(result);
+                    }
+                }
+            } else {
+                addErrorMessage(`Failed to apply fix: ${result.error}`);
+            }
+        } catch (error) {
+            addLogMessage(`Error applying fix: ${error.message}`, 'error');
+            addErrorMessage(`Error applying fix: ${error.message}`);
+        }
+    }
+
+    function showAlternativeQueries() {
+        if (!lastErrorAnalysis || !lastErrorAnalysis.alternative_queries) return;
+        
+        const messagesContainer = document.getElementById('messagesContainer');
+        const altDiv = document.createElement('div');
+        altDiv.className = 'message bot';
+        
+        let content = `
+            <div class="message-content">
+                <div class="message-header">🔄 Alternative Queries • ${new Date().toLocaleTimeString()}</div>
+                <div class="message-text">Here are alternative queries that might work:</div>
+                
+                <div style="margin-top: 1rem;">
+        `;
+        
+        lastErrorAnalysis.alternative_queries.forEach((query, idx) => {
+            content += `
+                <div style="margin-bottom: 1rem;">
+                    <div class="sql-query" style="margin-bottom: 0.5rem;">${escapeHtml(query)}</div>
+                    <button class="quick-action" onclick="document.getElementById('messageInput').value = '${escapeHtml(query.replace(/'/g, "\\'"))}'">
+                        📋 Use This Query
+                    </button>
+                </div>
+            `;
+        });
+        
+        content += `
+                </div>
+            </div>
+        `;
+        
+        altDiv.innerHTML = content;
+        messagesContainer.appendChild(altDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    function showDiscoveryQueries() {
+        if (!lastErrorAnalysis || !lastErrorAnalysis.discovery_queries) return;
+        
+        const messagesContainer = document.getElementById('messagesContainer');
+        const discDiv = document.createElement('div');
+        discDiv.className = 'message bot';
+        
+        let content = `
+            <div class="message-content">
+                <div class="message-header">🔍 Discovery Queries • ${new Date().toLocaleTimeString()}</div>
+                <div class="message-text">These queries can help you find the correct table/column names:</div>
+                
+                <div style="margin-top: 1rem;">
+        `;
+        
+        lastErrorAnalysis.discovery_queries.forEach((query, idx) => {
+            content += `
+                <div style="margin-bottom: 1rem;">
+                    <div class="sql-query" style="margin-bottom: 0.5rem;">${escapeHtml(query)}</div>
+                    <button class="quick-action" onclick="runDiscoveryQuery('${escapeHtml(query.replace(/'/g, "\\'"))}')">
+                        🔍 Run Discovery
+                    </button>
+                </div>
+            `;
+        });
+        
+        content += `
+                </div>
+            </div>
+        `;
+        
+        discDiv.innerHTML = content;
+        messagesContainer.appendChild(discDiv);
+        messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    }
+
+    async function runDiscoveryQuery(query) {
+        try {
+            addLogMessage('Running discovery query...', 'info');
+            showTypingIndicator();
+            
+            const response = await fetch('/console/api/discovery', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    session_id: sessionId,
+                    query: query,
+                    database: currentDatabase
+                })
+            });
+            
+            const result = await response.json();
+            hideTypingIndicator();
+            
+            if (result.status === 'success') {
+                addLogMessage('Discovery query completed', 'success');
+                
+                const messagesContainer = document.getElementById('messagesContainer');
+                const resultDiv = document.createElement('div');
+                resultDiv.className = 'message bot';
+                
+                resultDiv.innerHTML = `
+                    <div class="message-content" style="border-left: 3px solid #6366f1;">
+                        <div class="message-header">🔍 Discovery Result • ${new Date().toLocaleTimeString()}</div>
+                        <div class="message-text">Found ${result.row_count} results in ${result.database}</div>
+                    </div>
+                `;
+                
+                messagesContainer.appendChild(resultDiv);
+                
+                // Show the discovery results
+                handleSingleDbResult(result);
+            } else {
+                addErrorMessage(`Discovery query failed: ${result.error}`);
+            }
+        } catch (error) {
+            hideTypingIndicator();
+            addLogMessage(`Discovery error: ${error.message}`, 'error');
         }
     }
 
@@ -526,7 +841,8 @@ def get_sql_console_javascript():
                 },
                 body: JSON.stringify({
                     logs: conversationLogs,
-                    format: 'text'
+                    format: 'text',
+                    session_id: sessionId
                 })
             });
             
@@ -654,12 +970,15 @@ def get_sql_console_javascript():
         
         // Process results for each database
         result.multi_db_results.forEach(dbResult => {
+            const hasError = dbResult.error;
+            const borderColor = hasError ? '#ef4444' : '#334155';
+            
             content += `
-                <div class="db-result-section">
+                <div class="db-result-section" style="border-color: ${borderColor};">
                     <div class="db-result-header">
-                        <div class="db-name">📊 ${escapeHtml(dbResult.database)}</div>
+                        <div class="db-name">${hasError ? '❌' : '📊'} ${escapeHtml(dbResult.database)}</div>
                         <div class="db-result-stats">
-                            ${dbResult.row_count || 0} rows • ${dbResult.execution_time || 0}ms
+                            ${hasError ? 'Error' : `${dbResult.row_count || 0} rows • ${dbResult.execution_time || 0}ms`}
                         </div>
                     </div>
             `;
