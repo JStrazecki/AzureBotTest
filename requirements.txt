@@ -1,3 +1,5 @@
+# requirements.txt - Updated with Power BI Analyst dependencies
+
 # Core web framework
 aiohttp==3.10.5
 gunicorn==21.2.0
@@ -6,9 +8,9 @@ gunicorn==21.2.0
 openai>=1.12.0
 tiktoken==0.5.2
 
-# Azure authentication (optional, for future use)
+# Azure authentication and Power BI
 azure-identity==1.15.0
-msal==1.31.1
+msal==1.31.1  # Required for Power BI authentication
 
 # Security
 pyjwt==2.8.0
@@ -21,3 +23,6 @@ charset-normalizer==3.3.2
 
 # Optional for performance monitoring
 psutil==5.9.0
+
+# Power BI specific (if using additional features)
+# azure-mgmt-powerbiembedded==2.0.0  # Optional for embedded scenarios

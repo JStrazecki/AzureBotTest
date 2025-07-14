@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-# app.py - Main SQL Assistant Application with Enhanced Error Handling and Power BI Analyst
+# app.py - Main SQL Assistant Application with Enhanced Error Handling
 """
-SQL Assistant Application - Updated with Unified SQL Translator and Power BI Analyst
-Now includes intelligent error analysis, query fixing, and business intelligence capabilities
+SQL Assistant Application - Updated with Unified SQL Translator
+Now includes intelligent error analysis and query fixing
 """
 
 import os
@@ -27,7 +27,6 @@ logger = logging.getLogger(__name__)
 # Suppress verbose logs
 logging.getLogger('openai').setLevel(logging.WARNING)
 logging.getLogger('tiktoken').setLevel(logging.WARNING)
-logging.getLogger('msal').setLevel(logging.WARNING)
 
 # Environment Configuration
 DEPLOYMENT_ENV = os.environ.get("DEPLOYMENT_ENV", "production")
@@ -42,22 +41,13 @@ def check_environment():
         "AZURE_FUNCTION_URL": "Azure Function URL"
     }
     
-    # Power BI variables (optional)
-    powerbi_vars = {
-        "POWERBI_TENANT_ID": "Power BI Tenant ID",
-        "POWERBI_CLIENT_ID": "Power BI Client ID",
-        "POWERBI_CLIENT_SECRET": "Power BI Client Secret"
-    }
-    
     logger.info("=== Environment Check ===")
     missing_vars = []
-    missing_powerbi = []
     
-    # Check required vars
     for var, description in required_vars.items():
         value = os.environ.get(var)
         if value:
-            if "KEY" in var or "PASSWORD" in var or "SECRET" in var:
+            if "KEY" in var or "PASSWORD" in var:
                 masked = value[:4] + "***" + value[-4:] if len(value) > 8 else "***"
                 logger.info(f"✓ {var}: {masked}")
             else:
@@ -66,32 +56,10 @@ def check_environment():
             logger.error(f"❌ {var}: NOT SET ({description})")
             missing_vars.append(var)
     
-    # Check Power BI vars
-    logger.info("\n=== Power BI Configuration ===")
-    for var, description in powerbi_vars.items():
-        value = os.environ.get(var)
-        if value:
-            if "SECRET" in var:
-                masked = value[:4] + "***" + value[-4:] if len(value) > 8 else "***"
-                logger.info(f"✓ {var}: {masked}")
-            else:
-                logger.info(f"✓ {var}: {value[:30]}...")
-        else:
-            logger.info(f"ℹ️ {var}: NOT SET ({description})")
-            missing_powerbi.append(var)
-    
     # Check if URL has embedded authentication
     function_url = os.environ.get("AZURE_FUNCTION_URL", "")
     if function_url and "code=" in function_url:
         logger.info("✅ Azure Function authentication: URL-embedded (recommended)")
-    
-    # Power BI status
-    if not missing_powerbi:
-        logger.info("✅ Power BI Analyst: Fully configured")
-    elif len(missing_powerbi) < 3:
-        logger.info("⚠️ Power BI Analyst: Partially configured")
-    else:
-        logger.info("ℹ️ Power BI Analyst: Not configured (optional feature)")
     
     return missing_vars
 
@@ -130,32 +98,22 @@ if not missing_vars or all(var not in missing_vars for var in ["AZURE_OPENAI_END
 async def health(req: Request) -> Response:
     """Health check endpoint"""
     try:
-        # Check Power BI configuration
-        powerbi_configured = all([
-            os.environ.get("POWERBI_TENANT_ID"),
-            os.environ.get("POWERBI_CLIENT_ID"),
-            os.environ.get("POWERBI_CLIENT_SECRET")
-        ])
-        
         health_status = {
             "status": "healthy",
-            "version": "2.2.0",  # Updated version
+            "version": "2.1.0",  # Updated version
             "timestamp": datetime.now().isoformat(),
             "environment": DEPLOYMENT_ENV,
             "services": {
                 "console": "available",
                 "admin_dashboard": "available",
                 "sql_translator": "available" if SQL_TRANSLATOR else "not available",
-                "sql_function": "configured" if os.environ.get("AZURE_FUNCTION_URL") else "not configured",
-                "powerbi_analyst": "available" if powerbi_configured else "not configured"
+                "sql_function": "configured" if os.environ.get("AZURE_FUNCTION_URL") else "not configured"
             },
             "features": {
                 "error_analysis": SQL_TRANSLATOR is not None,
                 "query_fixing": SQL_TRANSLATOR is not None,
                 "multi_database": True,
-                "standardization_checks": True,
-                "powerbi_integration": powerbi_configured,
-                "business_intelligence": powerbi_configured
+                "standardization_checks": True
             },
             "missing_vars": missing_vars
         }
@@ -177,29 +135,11 @@ async def health(req: Request) -> Response:
 # Root endpoint
 async def index(req: Request) -> Response:
     """Root endpoint with navigation"""
-    
-    # Check Power BI configuration
-    powerbi_configured = all([
-        os.environ.get("POWERBI_TENANT_ID"),
-        os.environ.get("POWERBI_CLIENT_ID"),
-        os.environ.get("POWERBI_CLIENT_SECRET")
-    ])
-    
-    analyst_section = ""
-    if powerbi_configured:
-        analyst_section = '''
-                <a href="/analyst">Power BI Analyst</a>
-                <span class="new-badge">NEW</span>'''
-    else:
-        analyst_section = '''
-                <a href="/analyst" style="opacity: 0.5; cursor: not-allowed;">Power BI Analyst</a>
-                <span style="font-size: 12px; color: #666;">(Not configured)</span>'''
-    
     html = f"""
     <!DOCTYPE html>
     <html>
     <head>
-        <title>SQL Assistant - Enhanced with Power BI</title>
+        <title>SQL Assistant - Enhanced</title>
         <style>
             body {{
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -259,7 +199,6 @@ async def index(req: Request) -> Response:
                 border-radius: 8px;
                 font-weight: 600;
                 transition: transform 0.2s;
-                position: relative;
             }}
             a:hover {{
                 transform: translateY(-2px);
@@ -278,36 +217,22 @@ async def index(req: Request) -> Response:
                 border-radius: 4px;
                 font-size: 12px;
                 margin-left: 5px;
-                position: absolute;
-                right: 20px;
-                top: 50%;
-                transform: translateY(-50%);
-            }}
-            .section {{
-                margin: 20px 0;
-                text-align: left;
-            }}
-            .section h4 {{
-                color: #667eea;
-                margin-bottom: 10px;
             }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>🤖 SQL Assistant</h1>
-            <div class="version">Version 2.2.0 - Enhanced with Power BI Integration</div>
+            <div class="version">Version 2.1.0 - Enhanced with Error Analysis</div>
             
             <div class="features">
                 <h3>✨ What's New</h3>
                 <ul>
-                    <li>📊 <strong>Power BI Analyst</strong> <span class="new-badge" style="position: relative;">NEW</span><br>
-                        Natural language business intelligence from your Power BI datasets</li>
-                    <li>🔧 <strong>Intelligent Error Analysis</strong><br>
+                    <li>🔧 <strong>Intelligent Error Analysis</strong> <span class="new-badge">NEW</span><br>
                         When queries fail, get detailed analysis and fix suggestions</li>
-                    <li>🤖 <strong>Automatic Query Fixing</strong><br>
+                    <li>🤖 <strong>Automatic Query Fixing</strong> <span class="new-badge">NEW</span><br>
                         One-click application of suggested fixes</li>
-                    <li>🔍 <strong>Discovery Queries</strong><br>
+                    <li>🔍 <strong>Discovery Queries</strong> <span class="new-badge">NEW</span><br>
                         Find correct table and column names easily</li>
                     <li>📊 <strong>Database Standardization</strong><br>
                         Check schema compliance across systems</li>
@@ -316,21 +241,15 @@ async def index(req: Request) -> Response:
                 </ul>
             </div>
             
-            <div class="section">
-                <h4>🚀 Available Tools</h4>
-            </div>
-            
             <div class="links">
                 <a href="/console">SQL Console</a>
                 <a href="/admin">Admin Dashboard</a>
-                {analyst_section}
                 <a href="/health">Health Status</a>
             </div>
             
             <div class="status">
                 Environment: {DEPLOYMENT_ENV}<br>
                 SQL Translator: {'✅ Ready with Error Analysis' if SQL_TRANSLATOR else '❌ Not Available'}<br>
-                Power BI Analyst: {'✅ Configured' if powerbi_configured else '⚠️ Not Configured'}<br>
                 Token Usage: {'Check /health for details' if SQL_TRANSLATOR else 'N/A'}
             </div>
         </div>
@@ -363,27 +282,12 @@ try:
 except ImportError as e:
     logger.error(f"❌ Failed to add SQL console: {e}")
 
-# Import and add Power BI Analyst (if configured)
-try:
-    if all([os.environ.get("POWERBI_TENANT_ID"), 
-            os.environ.get("POWERBI_CLIENT_ID"),
-            os.environ.get("POWERBI_CLIENT_SECRET")]):
-        from analyst_routes import add_analyst_routes
-        analyst_endpoint = add_analyst_routes(APP)
-        logger.info("✓ Power BI Analyst routes added successfully")
-    else:
-        logger.info("ℹ️ Power BI Analyst not added (not configured)")
-except ImportError as e:
-    logger.error(f"❌ Failed to add Power BI Analyst: {e}")
-except Exception as e:
-    logger.error(f"❌ Error initializing Power BI Analyst: {e}")
-
 # Startup tasks
 async def on_startup(app):
     """Perform startup tasks"""
     logger.info("=== SQL Assistant Enhanced Startup ===")
     logger.info(f"Environment: {DEPLOYMENT_ENV}")
-    logger.info("Features: Error Analysis, Query Fixing, Discovery Queries, Power BI Integration")
+    logger.info("Features: Error Analysis, Query Fixing, Discovery Queries")
     
     if missing_vars:
         logger.warning(f"⚠️ Missing environment variables: {', '.join(missing_vars)}")
@@ -391,7 +295,7 @@ async def on_startup(app):
         logger.info("✓ All required environment variables are set")
     
     # Create necessary directories
-    dirs = ['.token_usage', 'logs', '.query_history', '.error_logs', '.analyst_cache']
+    dirs = ['.token_usage', 'logs', '.query_history', '.error_logs']
     for dir_name in dirs:
         try:
             os.makedirs(dir_name, exist_ok=True)
@@ -485,17 +389,9 @@ APP.router.add_post("/api/test-error-analysis", test_error_analysis)
 # Simple info endpoint
 async def info(req: Request) -> Response:
     """Information about the application"""
-    
-    # Check Power BI configuration
-    powerbi_configured = all([
-        os.environ.get("POWERBI_TENANT_ID"),
-        os.environ.get("POWERBI_CLIENT_ID"),
-        os.environ.get("POWERBI_CLIENT_SECRET")
-    ])
-    
     info_data = {
-        'name': 'SQL Assistant Enhanced with Power BI',
-        'version': '2.2.0',
+        'name': 'SQL Assistant Enhanced',
+        'version': '2.1.0',
         'features': [
             'SQL Console with natural language support',
             'Intelligent error analysis and query fixing',
@@ -503,31 +399,24 @@ async def info(req: Request) -> Response:
             'Discovery queries for finding correct object names',
             'Admin Dashboard with system monitoring',
             'Azure OpenAI integration with token tracking',
-            'Azure SQL Function connectivity',
-            'Power BI integration for business intelligence' if powerbi_configured else 'Power BI integration (not configured)'
+            'Azure SQL Function connectivity'
         ],
         'new_features': [
-            'Power BI Analyst - Natural language BI from Power BI datasets',
-            'Progressive analysis with automatic follow-up queries',
-            'Business recommendations based on data insights',
-            'DAX query generation and error fixing',
-            'Multi-workspace and multi-dataset support'
+            'Error analysis when queries fail',
+            'One-click query fixes',
+            'Alternative query suggestions',
+            'Discovery queries to find tables/columns',
+            'Enhanced multi-database support'
         ],
         'endpoints': [
             {'path': '/', 'description': 'Home page'},
             {'path': '/console', 'description': 'SQL Console with error handling'},
             {'path': '/admin', 'description': 'Admin Dashboard'},
-            {'path': '/analyst', 'description': 'Power BI Analyst' + (' (configured)' if powerbi_configured else ' (not configured)')},
             {'path': '/health', 'description': 'Health check with token usage'},
             {'path': '/info', 'description': 'This endpoint'},
             {'path': '/api/test-translation', 'description': 'Test SQL translation'},
             {'path': '/api/test-error-analysis', 'description': 'Test error analysis'}
-        ],
-        'configuration': {
-            'sql_translator': SQL_TRANSLATOR is not None,
-            'powerbi_analyst': powerbi_configured,
-            'azure_function': bool(os.environ.get("AZURE_FUNCTION_URL"))
-        }
+        ]
     }
     
     # Add token usage if available
@@ -550,7 +439,6 @@ if __name__ == "__main__":
         logger.info("  - / (Home)")
         logger.info("  - /console (SQL Console with Error Analysis)")
         logger.info("  - /admin (Admin Dashboard)")
-        logger.info("  - /analyst (Power BI Analyst)")
         logger.info("  - /health (Health Check)")
         logger.info("  - /info (Application Info)")
         logger.info("  - /api/test-translation (Test Translation)")
