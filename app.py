@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # app.py - Main SQL Assistant Application with Enhanced Error Handling and Power BI Analyst
 """
-SQL Assistant Application - Updated with Unified SQL Translator and Power BI Analyst
-Now includes intelligent error analysis, query fixing, and business intelligence capabilities
+SQL Assistant Application - Fixed Power BI Analyst Integration
+Now includes better error handling and route registration
 """
 
 import os
@@ -42,7 +42,7 @@ def check_environment():
         "AZURE_FUNCTION_URL": "Azure Function URL"
     }
     
-    # Power BI variables (optional)
+    # Power BI variables (optional but needed for analyst)
     powerbi_vars = {
         "POWERBI_TENANT_ID": "Power BI Tenant ID",
         "POWERBI_CLIENT_ID": "Power BI Client ID",
@@ -52,6 +52,7 @@ def check_environment():
     logger.info("=== Environment Check ===")
     missing_vars = []
     missing_powerbi = []
+    powerbi_status = {}
     
     # Check required vars
     for var, description in required_vars.items():
@@ -71,12 +72,14 @@ def check_environment():
     for var, description in powerbi_vars.items():
         value = os.environ.get(var)
         if value:
+            powerbi_status[var] = True
             if "SECRET" in var:
                 masked = value[:4] + "***" + value[-4:] if len(value) > 8 else "***"
                 logger.info(f"✓ {var}: {masked}")
             else:
                 logger.info(f"✓ {var}: {value[:30]}...")
         else:
+            powerbi_status[var] = False
             logger.info(f"ℹ️ {var}: NOT SET ({description})")
             missing_powerbi.append(var)
     
@@ -86,17 +89,18 @@ def check_environment():
         logger.info("✅ Azure Function authentication: URL-embedded (recommended)")
     
     # Power BI status
-    if not missing_powerbi:
+    all_powerbi_configured = all(powerbi_status.values())
+    if all_powerbi_configured:
         logger.info("✅ Power BI Analyst: Fully configured")
-    elif len(missing_powerbi) < 3:
+    elif any(powerbi_status.values()):
         logger.info("⚠️ Power BI Analyst: Partially configured")
     else:
         logger.info("ℹ️ Power BI Analyst: Not configured (optional feature)")
     
-    return missing_vars
+    return missing_vars, powerbi_status
 
 # Run environment check
-missing_vars = check_environment()
+missing_vars, powerbi_status = check_environment()
 
 # Error handling middleware
 @middleware
@@ -130,16 +134,19 @@ if not missing_vars or all(var not in missing_vars for var in ["AZURE_OPENAI_END
 async def health(req: Request) -> Response:
     """Health check endpoint"""
     try:
-        # Check Power BI configuration
+        # Check actual Power BI configuration status
         powerbi_configured = all([
             os.environ.get("POWERBI_TENANT_ID"),
             os.environ.get("POWERBI_CLIENT_ID"),
             os.environ.get("POWERBI_CLIENT_SECRET")
         ])
         
+        # Check if analyst routes are actually registered
+        analyst_routes_registered = any('/analyst' in str(r) for r in req.app.router.routes())
+        
         health_status = {
             "status": "healthy",
-            "version": "2.2.0",  # Updated version
+            "version": "2.2.1",  # Updated version
             "timestamp": datetime.now().isoformat(),
             "environment": DEPLOYMENT_ENV,
             "services": {
@@ -147,7 +154,7 @@ async def health(req: Request) -> Response:
                 "admin_dashboard": "available",
                 "sql_translator": "available" if SQL_TRANSLATOR else "not available",
                 "sql_function": "configured" if os.environ.get("AZURE_FUNCTION_URL") else "not configured",
-                "powerbi_analyst": "available" if powerbi_configured else "not configured"
+                "powerbi_analyst": "available" if analyst_routes_registered else "not available"
             },
             "features": {
                 "error_analysis": SQL_TRANSLATOR is not None,
@@ -156,6 +163,13 @@ async def health(req: Request) -> Response:
                 "standardization_checks": True,
                 "powerbi_integration": powerbi_configured,
                 "business_intelligence": powerbi_configured
+            },
+            "powerbi_config": {
+                "tenant_id_set": bool(os.environ.get("POWERBI_TENANT_ID")),
+                "client_id_set": bool(os.environ.get("POWERBI_CLIENT_ID")),
+                "client_secret_set": bool(os.environ.get("POWERBI_CLIENT_SECRET")),
+                "all_configured": powerbi_configured,
+                "routes_registered": analyst_routes_registered
             },
             "missing_vars": missing_vars
         }
@@ -178,6 +192,9 @@ async def health(req: Request) -> Response:
 async def index(req: Request) -> Response:
     """Root endpoint with navigation"""
     
+    # Check if analyst routes are registered
+    analyst_routes_registered = any('/analyst' in str(r) for r in req.app.router.routes())
+    
     # Check Power BI configuration
     powerbi_configured = all([
         os.environ.get("POWERBI_TENANT_ID"),
@@ -186,10 +203,14 @@ async def index(req: Request) -> Response:
     ])
     
     analyst_section = ""
-    if powerbi_configured:
+    if analyst_routes_registered:
         analyst_section = '''
                 <a href="/analyst">Power BI Analyst</a>
                 <span class="new-badge">NEW</span>'''
+    elif powerbi_configured:
+        analyst_section = '''
+                <a href="/analyst" style="opacity: 0.7;">Power BI Analyst</a>
+                <span style="font-size: 12px; color: #666;">(Routes not loaded)</span>'''
     else:
         analyst_section = '''
                 <a href="/analyst" style="opacity: 0.5; cursor: not-allowed;">Power BI Analyst</a>
@@ -291,12 +312,21 @@ async def index(req: Request) -> Response:
                 color: #667eea;
                 margin-bottom: 10px;
             }}
+            .debug-info {{
+                margin-top: 20px;
+                padding: 10px;
+                background: #fff3cd;
+                border: 1px solid #ffeaa7;
+                border-radius: 8px;
+                font-size: 12px;
+                text-align: left;
+            }}
         </style>
     </head>
     <body>
         <div class="container">
             <h1>🤖 SQL Assistant</h1>
-            <div class="version">Version 2.2.0 - Enhanced with Power BI Integration</div>
+            <div class="version">Version 2.2.1 - Enhanced with Power BI Integration</div>
             
             <div class="features">
                 <h3>✨ What's New</h3>
@@ -330,8 +360,15 @@ async def index(req: Request) -> Response:
             <div class="status">
                 Environment: {DEPLOYMENT_ENV}<br>
                 SQL Translator: {'✅ Ready with Error Analysis' if SQL_TRANSLATOR else '❌ Not Available'}<br>
-                Power BI Analyst: {'✅ Configured' if powerbi_configured else '⚠️ Not Configured'}<br>
+                Power BI Analyst: {'✅ Available' if analyst_routes_registered else '⚠️ Not Loaded' if powerbi_configured else '❌ Not Configured'}<br>
                 Token Usage: {'Check /health for details' if SQL_TRANSLATOR else 'N/A'}
+            </div>
+            
+            <div class="debug-info">
+                <strong>Debug Info:</strong><br>
+                Analyst Routes Registered: {analyst_routes_registered}<br>
+                Power BI Env Vars Set: {powerbi_configured}<br>
+                Check /health endpoint for detailed configuration status
             </div>
         </div>
     </body>
@@ -363,20 +400,97 @@ try:
 except ImportError as e:
     logger.error(f"❌ Failed to add SQL console: {e}")
 
-# Import and add Power BI Analyst (if configured)
+# Import and add Power BI Analyst - ALWAYS TRY TO ADD ROUTES
+# This ensures routes are registered even if there's a partial configuration issue
 try:
-    if all([os.environ.get("POWERBI_TENANT_ID"), 
-            os.environ.get("POWERBI_CLIENT_ID"),
-            os.environ.get("POWERBI_CLIENT_SECRET")]):
+    logger.info("Attempting to add Power BI Analyst routes...")
+    
+    # Check if any Power BI variables are set
+    any_powerbi_vars = any([
+        os.environ.get("POWERBI_TENANT_ID"),
+        os.environ.get("POWERBI_CLIENT_ID"),
+        os.environ.get("POWERBI_CLIENT_SECRET")
+    ])
+    
+    if any_powerbi_vars:
+        logger.info("At least one Power BI variable is set, attempting to load analyst...")
+        
+        # Try to import and add routes
         from analyst_routes import add_analyst_routes
         analyst_endpoint = add_analyst_routes(APP)
         logger.info("✓ Power BI Analyst routes added successfully")
+        
+        # Check if all variables are set
+        if not all([os.environ.get("POWERBI_TENANT_ID"), 
+                    os.environ.get("POWERBI_CLIENT_ID"),
+                    os.environ.get("POWERBI_CLIENT_SECRET")]):
+            logger.warning("⚠️ Power BI Analyst routes added but configuration is incomplete")
     else:
-        logger.info("ℹ️ Power BI Analyst not added (not configured)")
+        logger.info("No Power BI variables set, creating placeholder route")
+        
+        # Add a placeholder route that explains the configuration requirement
+        async def analyst_placeholder(request):
+            return Response(text="""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Power BI Analyst - Configuration Required</title>
+                <style>
+                    body { font-family: Arial, sans-serif; padding: 40px; background: #f5f5f5; }
+                    .container { max-width: 600px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                    h1 { color: #333; }
+                    .error { background: #fee; padding: 15px; border-radius: 5px; border: 1px solid #fcc; margin: 20px 0; }
+                    .info { background: #e7f3ff; padding: 15px; border-radius: 5px; border: 1px solid #b3d9ff; margin: 20px 0; }
+                    code { background: #f0f0f0; padding: 2px 5px; border-radius: 3px; }
+                    a { color: #667eea; text-decoration: none; }
+                    a:hover { text-decoration: underline; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>📊 Power BI Analyst - Configuration Required</h1>
+                    
+                    <div class="error">
+                        <h3>⚠️ Power BI Integration Not Configured</h3>
+                        <p>The Power BI Analyst feature requires configuration of Azure Active Directory credentials.</p>
+                    </div>
+                    
+                    <div class="info">
+                        <h3>📋 Required Environment Variables</h3>
+                        <p>Please set the following environment variables in your Azure App Service:</p>
+                        <ul>
+                            <li><code>POWERBI_TENANT_ID</code> - Your Azure AD tenant ID</li>
+                            <li><code>POWERBI_CLIENT_ID</code> - App registration client ID</li>
+                            <li><code>POWERBI_CLIENT_SECRET</code> - App registration client secret</li>
+                        </ul>
+                    </div>
+                    
+                    <div class="info">
+                        <h3>🔧 Setup Instructions</h3>
+                        <ol>
+                            <li>Create an app registration in Azure AD</li>
+                            <li>Grant Power BI API permissions (Dataset.Read.All)</li>
+                            <li>Create a client secret</li>
+                            <li>Add the environment variables to your App Service</li>
+                            <li>Restart the application</li>
+                        </ol>
+                    </div>
+                    
+                    <p><a href="/">← Back to Home</a> | <a href="/health">Check Health Status</a></p>
+                </div>
+            </body>
+            </html>
+            """, content_type='text/html')
+        
+        APP.router.add_get('/analyst', analyst_placeholder)
+        APP.router.add_get('/analyst/', analyst_placeholder)
+        logger.info("✓ Added placeholder route for Power BI Analyst")
+        
 except ImportError as e:
-    logger.error(f"❌ Failed to add Power BI Analyst: {e}")
+    logger.error(f"❌ Failed to import Power BI Analyst: {e}")
+    logger.error("This might be due to missing dependencies or import errors")
 except Exception as e:
-    logger.error(f"❌ Error initializing Power BI Analyst: {e}")
+    logger.error(f"❌ Error initializing Power BI Analyst: {e}", exc_info=True)
 
 # Startup tasks
 async def on_startup(app):
@@ -389,6 +503,26 @@ async def on_startup(app):
         logger.warning(f"⚠️ Missing environment variables: {', '.join(missing_vars)}")
     else:
         logger.info("✓ All required environment variables are set")
+    
+    # Log Power BI status
+    powerbi_configured = all([
+        os.environ.get("POWERBI_TENANT_ID"),
+        os.environ.get("POWERBI_CLIENT_ID"),
+        os.environ.get("POWERBI_CLIENT_SECRET")
+    ])
+    
+    logger.info(f"Power BI Configuration Status: {powerbi_configured}")
+    if not powerbi_configured:
+        logger.info("Power BI variables status:")
+        logger.info(f"  POWERBI_TENANT_ID: {'SET' if os.environ.get('POWERBI_TENANT_ID') else 'NOT SET'}")
+        logger.info(f"  POWERBI_CLIENT_ID: {'SET' if os.environ.get('POWERBI_CLIENT_ID') else 'NOT SET'}")
+        logger.info(f"  POWERBI_CLIENT_SECRET: {'SET' if os.environ.get('POWERBI_CLIENT_SECRET') else 'NOT SET'}")
+    
+    # Log registered routes
+    logger.info("Registered routes:")
+    for route in app.router.routes():
+        if hasattr(route, 'resource'):
+            logger.info(f"  {route.resource}")
     
     # Create necessary directories
     dirs = ['.token_usage', 'logs', '.query_history', '.error_logs', '.analyst_cache']
@@ -493,9 +627,12 @@ async def info(req: Request) -> Response:
         os.environ.get("POWERBI_CLIENT_SECRET")
     ])
     
+    # Check if analyst routes are registered
+    analyst_routes_registered = any('/analyst' in str(r) for r in req.app.router.routes())
+    
     info_data = {
         'name': 'SQL Assistant Enhanced with Power BI',
-        'version': '2.2.0',
+        'version': '2.2.1',
         'features': [
             'SQL Console with natural language support',
             'Intelligent error analysis and query fixing',
@@ -504,7 +641,7 @@ async def info(req: Request) -> Response:
             'Admin Dashboard with system monitoring',
             'Azure OpenAI integration with token tracking',
             'Azure SQL Function connectivity',
-            'Power BI integration for business intelligence' if powerbi_configured else 'Power BI integration (not configured)'
+            f'Power BI integration {"(available)" if analyst_routes_registered else "(not loaded)" if powerbi_configured else "(not configured)"}'
         ],
         'new_features': [
             'Power BI Analyst - Natural language BI from Power BI datasets',
@@ -517,16 +654,24 @@ async def info(req: Request) -> Response:
             {'path': '/', 'description': 'Home page'},
             {'path': '/console', 'description': 'SQL Console with error handling'},
             {'path': '/admin', 'description': 'Admin Dashboard'},
-            {'path': '/analyst', 'description': 'Power BI Analyst' + (' (configured)' if powerbi_configured else ' (not configured)')},
-            {'path': '/health', 'description': 'Health check with token usage'},
+            {'path': '/analyst', 'description': f'Power BI Analyst {"(available)" if analyst_routes_registered else "(placeholder)" }'},
+            {'path': '/health', 'description': 'Health check with detailed status'},
             {'path': '/info', 'description': 'This endpoint'},
             {'path': '/api/test-translation', 'description': 'Test SQL translation'},
             {'path': '/api/test-error-analysis', 'description': 'Test error analysis'}
         ],
         'configuration': {
             'sql_translator': SQL_TRANSLATOR is not None,
-            'powerbi_analyst': powerbi_configured,
+            'powerbi_analyst_configured': powerbi_configured,
+            'powerbi_analyst_loaded': analyst_routes_registered,
             'azure_function': bool(os.environ.get("AZURE_FUNCTION_URL"))
+        },
+        'debug': {
+            'powerbi_vars': {
+                'tenant_id': 'SET' if os.environ.get('POWERBI_TENANT_ID') else 'NOT SET',
+                'client_id': 'SET' if os.environ.get('POWERBI_CLIENT_ID') else 'NOT SET',
+                'client_secret': 'SET' if os.environ.get('POWERBI_CLIENT_SECRET') else 'NOT SET'
+            }
         }
     }
     
