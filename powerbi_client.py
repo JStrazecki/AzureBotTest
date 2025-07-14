@@ -1,459 +1,546 @@
-#!/usr/bin/env python3
-# app.py - Main SQL Assistant Application with Enhanced Error Handling
+# powerbi_client.py - Power BI API Client for Authentication and Data Access
 """
-SQL Assistant Application - Updated with Unified SQL Translator
-Now includes intelligent error analysis and query fixing
+Power BI Client - Handles authentication, workspace discovery, and DAX query execution
 """
 
 import os
 import json
-import asyncio
 import logging
-from datetime import datetime
-from typing import Dict, Any, Optional
-
-# Web framework
-from aiohttp import web
-from aiohttp.web import Request, Response, json_response, middleware
+import asyncio
+from typing import Dict, List, Any, Optional, Tuple
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 import aiohttp
+from msal import ConfidentialClientApplication
+import jwt
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
-# Suppress verbose logs
-logging.getLogger('openai').setLevel(logging.WARNING)
-logging.getLogger('tiktoken').setLevel(logging.WARNING)
-
-# Environment Configuration
-DEPLOYMENT_ENV = os.environ.get("DEPLOYMENT_ENV", "production")
-
-# Check environment variables
-def check_environment():
-    """Check and log environment variable status"""
-    required_vars = {
-        "AZURE_OPENAI_ENDPOINT": "Azure OpenAI Endpoint",
-        "AZURE_OPENAI_API_KEY": "Azure OpenAI API Key",
-        "AZURE_OPENAI_DEPLOYMENT_NAME": "OpenAI Deployment Name",
-        "AZURE_FUNCTION_URL": "Azure Function URL"
-    }
+@dataclass
+class PowerBIConfig:
+    """Power BI configuration"""
+    tenant_id: str
+    client_id: str
+    client_secret: str
+    scope: List[str] = field(default_factory=lambda: ["https://analysis.windows.net/powerbi/api/.default"])
+    authority_url: str = field(init=False)
     
-    logger.info("=== Environment Check ===")
-    missing_vars = []
+    def __post_init__(self):
+        self.authority_url = f"https://login.microsoftonline.com/{self.tenant_id}"
+
+@dataclass
+class Workspace:
+    """Power BI Workspace"""
+    id: str
+    name: str
+    description: Optional[str] = None
+    type: Optional[str] = None
+    state: Optional[str] = None
+
+@dataclass
+class Dataset:
+    """Power BI Dataset"""
+    id: str
+    name: str
+    workspace_id: str
+    configured_by: Optional[str] = None
+    created_date: Optional[datetime] = None
+    content_provider_type: Optional[str] = None
+    description: Optional[str] = None
     
-    for var, description in required_vars.items():
-        value = os.environ.get(var)
-        if value:
-            if "KEY" in var or "PASSWORD" in var:
-                masked = value[:4] + "***" + value[-4:] if len(value) > 8 else "***"
-                logger.info(f"✓ {var}: {masked}")
-            else:
-                logger.info(f"✓ {var}: {value[:30]}...")
+@dataclass
+class Measure:
+    """Power BI Measure"""
+    name: str
+    expression: str
+    description: Optional[str] = None
+    format_string: Optional[str] = None
+    table_name: Optional[str] = None
+
+@dataclass
+class Table:
+    """Power BI Table"""
+    name: str
+    columns: List[Dict[str, Any]]
+    measures: List[Measure]
+    description: Optional[str] = None
+    
+@dataclass
+class DAXQueryResult:
+    """Result of a DAX query execution"""
+    success: bool
+    data: Optional[List[Dict[str, Any]]] = None
+    error: Optional[str] = None
+    execution_time_ms: Optional[int] = None
+    row_count: Optional[int] = None
+    dataset_id: Optional[str] = None
+    dataset_name: Optional[str] = None
+
+class PowerBIClient:
+    """Client for interacting with Power BI REST API"""
+    
+    def __init__(self):
+        # Load configuration from environment
+        self.config = PowerBIConfig(
+            tenant_id=os.environ.get("POWERBI_TENANT_ID", ""),
+            client_id=os.environ.get("POWERBI_CLIENT_ID", ""),
+            client_secret=os.environ.get("POWERBI_CLIENT_SECRET", "")
+        )
+        
+        if not all([self.config.tenant_id, self.config.client_id, self.config.client_secret]):
+            logger.warning("Power BI configuration incomplete")
+            self.configured = False
         else:
-            logger.error(f"❌ {var}: NOT SET ({description})")
-            missing_vars.append(var)
-    
-    # Check if URL has embedded authentication
-    function_url = os.environ.get("AZURE_FUNCTION_URL", "")
-    if function_url and "code=" in function_url:
-        logger.info("✅ Azure Function authentication: URL-embedded (recommended)")
-    
-    return missing_vars
-
-# Run environment check
-missing_vars = check_environment()
-
-# Error handling middleware
-@middleware
-async def aiohttp_error_middleware(request: Request, handler):
-    """Global error handler for aiohttp"""
-    try:
-        response = await handler(request)
-        return response
-    except web.HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unhandled error: {e}", exc_info=True)
-        return json_response({
-            "error": "Internal server error",
-            "message": str(e),
-            "type": type(e).__name__
-        }, status=500)
-
-# Initialize SQL translator if available
-SQL_TRANSLATOR = None
-if not missing_vars or all(var not in missing_vars for var in ["AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_API_KEY"]):
-    try:
-        # Import the unified SQL translator
-        from sql_translator import SQLTranslator
-        SQL_TRANSLATOR = SQLTranslator()
-        logger.info("✓ Unified SQL Translator initialized with error analysis")
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize SQL Translator: {e}")
-
-# Health check endpoint
-async def health(req: Request) -> Response:
-    """Health check endpoint"""
-    try:
-        health_status = {
-            "status": "healthy",
-            "version": "2.1.0",  # Updated version
-            "timestamp": datetime.now().isoformat(),
-            "environment": DEPLOYMENT_ENV,
-            "services": {
-                "console": "available",
-                "admin_dashboard": "available",
-                "sql_translator": "available" if SQL_TRANSLATOR else "not available",
-                "sql_function": "configured" if os.environ.get("AZURE_FUNCTION_URL") else "not configured"
-            },
-            "features": {
-                "error_analysis": SQL_TRANSLATOR is not None,
-                "query_fixing": SQL_TRANSLATOR is not None,
-                "multi_database": True,
-                "standardization_checks": True
-            },
-            "missing_vars": missing_vars
-        }
-        
-        # Add token usage if available
-        if SQL_TRANSLATOR:
-            health_status["token_usage"] = SQL_TRANSLATOR.get_usage_summary()
-        
-        return json_response(health_status)
-        
-    except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        return json_response({
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }, status=503)
-
-# Root endpoint
-async def index(req: Request) -> Response:
-    """Root endpoint with navigation"""
-    html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>SQL Assistant - Enhanced</title>
-        <style>
-            body {{
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                margin: 0;
-            }}
-            .container {{
-                background: white;
-                padding: 40px;
-                border-radius: 16px;
-                box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-                text-align: center;
-                max-width: 600px;
-            }}
-            h1 {{
-                color: #333;
-                margin-bottom: 20px;
-            }}
-            .version {{
-                color: #666;
-                font-size: 14px;
-                margin-bottom: 30px;
-            }}
-            .features {{
-                text-align: left;
-                background: #f7f7f7;
-                padding: 20px;
-                border-radius: 8px;
-                margin-bottom: 30px;
-            }}
-            .features h3 {{
-                color: #667eea;
-                margin-top: 0;
-            }}
-            .features ul {{
-                margin: 10px 0;
-                padding-left: 20px;
-            }}
-            .features li {{
-                margin: 5px 0;
-            }}
-            .links {{
-                display: flex;
-                flex-direction: column;
-                gap: 15px;
-            }}
-            a {{
-                display: block;
-                padding: 15px 30px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                text-decoration: none;
-                border-radius: 8px;
-                font-weight: 600;
-                transition: transform 0.2s;
-            }}
-            a:hover {{
-                transform: translateY(-2px);
-            }}
-            .status {{
-                margin-top: 20px;
-                padding: 10px;
-                background: #f0f0f0;
-                border-radius: 8px;
-                font-size: 14px;
-            }}
-            .new-badge {{
-                background: #10b981;
-                color: white;
-                padding: 2px 8px;
-                border-radius: 4px;
-                font-size: 12px;
-                margin-left: 5px;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🤖 SQL Assistant</h1>
-            <div class="version">Version 2.1.0 - Enhanced with Error Analysis</div>
+            self.configured = True
             
-            <div class="features">
-                <h3>✨ What's New</h3>
-                <ul>
-                    <li>🔧 <strong>Intelligent Error Analysis</strong> <span class="new-badge">NEW</span><br>
-                        When queries fail, get detailed analysis and fix suggestions</li>
-                    <li>🤖 <strong>Automatic Query Fixing</strong> <span class="new-badge">NEW</span><br>
-                        One-click application of suggested fixes</li>
-                    <li>🔍 <strong>Discovery Queries</strong> <span class="new-badge">NEW</span><br>
-                        Find correct table and column names easily</li>
-                    <li>📊 <strong>Database Standardization</strong><br>
-                        Check schema compliance across systems</li>
-                    <li>🗄️ <strong>Multi-Database Support</strong><br>
-                        Compare and analyze across multiple databases</li>
-                </ul>
-            </div>
+        # Initialize MSAL client
+        self.msal_app = ConfidentialClientApplication(
+            self.config.client_id,
+            authority=self.config.authority_url,
+            client_credential=self.config.client_secret
+        ) if self.configured else None
+        
+        # Cache for access tokens
+        self._token_cache = {}
+        self._workspace_cache = {}
+        self._dataset_cache = {}
+        
+        # API endpoints
+        self.base_url = "https://api.powerbi.com/v1.0/myorg"
+        
+    async def get_access_token(self, user_token: Optional[str] = None) -> Optional[str]:
+        """Get access token for Power BI API"""
+        if not self.configured:
+            return None
             
-            <div class="links">
-                <a href="/console">SQL Console</a>
-                <a href="/admin">Admin Dashboard</a>
-                <a href="/health">Health Status</a>
-            </div>
-            
-            <div class="status">
-                Environment: {DEPLOYMENT_ENV}<br>
-                SQL Translator: {'✅ Ready with Error Analysis' if SQL_TRANSLATOR else '❌ Not Available'}<br>
-                Token Usage: {'Check /health for details' if SQL_TRANSLATOR else 'N/A'}
-            </div>
-        </div>
-    </body>
-    </html>
-    """
-    
-    return Response(text=html, content_type='text/html')
-
-# Create the application
-APP = web.Application(middlewares=[aiohttp_error_middleware])
-
-# Add main routes
-APP.router.add_get("/", index)
-APP.router.add_get("/health", health)
-
-# Import and add admin dashboard
-try:
-    from admin_dashboard_routes import add_admin_routes
-    add_admin_routes(APP, SQL_TRANSLATOR)
-    logger.info("✓ Admin dashboard routes added")
-except ImportError as e:
-    logger.error(f"❌ Failed to add admin dashboard: {e}")
-
-# Import and add SQL console with enhanced error handling
-try:
-    from sql_console_routes import add_console_routes
-    add_console_routes(APP, SQL_TRANSLATOR)
-    logger.info("✓ Enhanced SQL console routes added with error analysis")
-except ImportError as e:
-    logger.error(f"❌ Failed to add SQL console: {e}")
-
-# Startup tasks
-async def on_startup(app):
-    """Perform startup tasks"""
-    logger.info("=== SQL Assistant Enhanced Startup ===")
-    logger.info(f"Environment: {DEPLOYMENT_ENV}")
-    logger.info("Features: Error Analysis, Query Fixing, Discovery Queries")
-    
-    if missing_vars:
-        logger.warning(f"⚠️ Missing environment variables: {', '.join(missing_vars)}")
-    else:
-        logger.info("✓ All required environment variables are set")
-    
-    # Create necessary directories
-    dirs = ['.token_usage', 'logs', '.query_history', '.error_logs']
-    for dir_name in dirs:
         try:
-            os.makedirs(dir_name, exist_ok=True)
+            if user_token:
+                # Use on-behalf-of flow for user delegation
+                result = self.msal_app.acquire_token_on_behalf_of(
+                    user_assertion=user_token,
+                    scopes=self.config.scope
+                )
+            else:
+                # Use client credentials flow
+                result = self.msal_app.acquire_token_silent(
+                    scopes=self.config.scope,
+                    account=None
+                )
+                
+                if not result:
+                    result = self.msal_app.acquire_token_for_client(
+                        scopes=self.config.scope
+                    )
+            
+            if "access_token" in result:
+                return result["access_token"]
+            else:
+                logger.error(f"Failed to get access token: {result.get('error_description', 'Unknown error')}")
+                return None
+                
         except Exception as e:
-            logger.warning(f"Failed to create directory {dir_name}: {e}")
+            logger.error(f"Error getting access token: {e}")
+            return None
     
-    logger.info("=== Startup completed ===")
-
-# Cleanup tasks
-async def on_cleanup(app):
-    """Perform cleanup tasks"""
-    logger.info("SQL Assistant shutting down...")
+    async def get_user_workspaces(self, access_token: str) -> List[Workspace]:
+        """Get workspaces accessible to the user"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/groups",
+                    headers=headers
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        workspaces = []
+                        
+                        for ws in data.get("value", []):
+                            workspace = Workspace(
+                                id=ws["id"],
+                                name=ws["name"],
+                                description=ws.get("description"),
+                                type=ws.get("type"),
+                                state=ws.get("state")
+                            )
+                            workspaces.append(workspace)
+                            
+                            # Cache workspace
+                            self._workspace_cache[workspace.id] = workspace
+                        
+                        return workspaces
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to get workspaces: {response.status} - {error_text}")
+                        return []
+                        
+        except Exception as e:
+            logger.error(f"Error getting workspaces: {e}")
+            return []
     
-    # Save token usage if available
-    if SQL_TRANSLATOR:
-        usage = SQL_TRANSLATOR.get_usage_summary()
-        logger.info(f"Final token usage: {usage['total_tokens']} tokens, ${usage['estimated_cost']:.4f}")
-
-# Register startup and cleanup handlers
-APP.on_startup.append(on_startup)
-APP.on_cleanup.append(on_cleanup)
-
-# Add additional utility routes
-async def test_sql_translation(req: Request) -> Response:
-    """Test endpoint for SQL translation with error analysis"""
-    try:
-        data = await req.json()
-        query = data.get('query', 'show me all tables')
+    async def get_datasets(self, access_token: str, workspace_id: str) -> List[Dataset]:
+        """Get datasets in a workspace"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/groups/{workspace_id}/datasets",
+                    headers=headers
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        datasets = []
+                        
+                        for ds in data.get("value", []):
+                            dataset = Dataset(
+                                id=ds["id"],
+                                name=ds["name"],
+                                workspace_id=workspace_id,
+                                configured_by=ds.get("configuredBy"),
+                                created_date=datetime.fromisoformat(ds["createdDate"].replace("Z", "+00:00")) if ds.get("createdDate") else None,
+                                content_provider_type=ds.get("contentProviderType"),
+                                description=ds.get("description")
+                            )
+                            datasets.append(dataset)
+                            
+                            # Cache dataset
+                            self._dataset_cache[dataset.id] = dataset
+                        
+                        return datasets
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to get datasets: {response.status} - {error_text}")
+                        return []
+                        
+        except Exception as e:
+            logger.error(f"Error getting datasets: {e}")
+            return []
+    
+    async def get_dataset_metadata(self, access_token: str, dataset_id: str) -> Dict[str, Any]:
+        """Get detailed metadata for a dataset including tables and measures"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            # Get dataset refresh history to understand data freshness
+            refresh_history = await self._get_refresh_history(access_token, dataset_id)
+            
+            # Execute DISCOVER queries to get schema
+            tables = await self._discover_tables(access_token, dataset_id)
+            measures = await self._discover_measures(access_token, dataset_id)
+            
+            # Get cached dataset info
+            dataset_info = self._dataset_cache.get(dataset_id, {})
+            
+            metadata = {
+                "dataset_id": dataset_id,
+                "dataset_name": dataset_info.name if hasattr(dataset_info, 'name') else "Unknown",
+                "tables": tables,
+                "measures": measures,
+                "table_count": len(tables),
+                "measure_count": len(measures),
+                "last_refresh": refresh_history.get("last_refresh"),
+                "refresh_status": refresh_history.get("status")
+            }
+            
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"Error getting dataset metadata: {e}")
+            return {}
+    
+    async def execute_dax_query(self, access_token: str, dataset_id: str, dax_query: str, dataset_name: Optional[str] = None) -> DAXQueryResult:
+        """Execute a DAX query against a dataset"""
+        start_time = datetime.now()
         
-        if not SQL_TRANSLATOR:
-            return json_response({
-                'status': 'error',
-                'error': 'SQL Translator not available'
-            })
+        try:
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            # Find the workspace ID for this dataset
+            workspace_id = await self._find_workspace_for_dataset(access_token, dataset_id)
+            if not workspace_id:
+                return DAXQueryResult(
+                    success=False,
+                    error="Could not find workspace for dataset"
+                )
+            
+            # Prepare the query payload
+            payload = {
+                "queries": [
+                    {
+                        "query": dax_query
+                    }
+                ],
+                "serializerSettings": {
+                    "includeNulls": True
+                }
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.base_url}/groups/{workspace_id}/datasets/{dataset_id}/executeQueries",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    execution_time = int((datetime.now() - start_time).total_seconds() * 1000)
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        
+                        # Extract results from the response
+                        if data.get("results") and len(data["results"]) > 0:
+                            query_result = data["results"][0]
+                            
+                            if "tables" in query_result and len(query_result["tables"]) > 0:
+                                table = query_result["tables"][0]
+                                rows = table.get("rows", [])
+                                
+                                # Convert to list of dictionaries
+                                formatted_rows = []
+                                if rows and "columns" in table:
+                                    columns = [col["name"] for col in table["columns"]]
+                                    for row in rows:
+                                        row_dict = {}
+                                        for i, col in enumerate(columns):
+                                            row_dict[col] = row.get(col) if isinstance(row, dict) else row[i] if i < len(row) else None
+                                        formatted_rows.append(row_dict)
+                                
+                                return DAXQueryResult(
+                                    success=True,
+                                    data=formatted_rows,
+                                    row_count=len(formatted_rows),
+                                    execution_time_ms=execution_time,
+                                    dataset_id=dataset_id,
+                                    dataset_name=dataset_name
+                                )
+                            else:
+                                # Query executed but returned no data
+                                return DAXQueryResult(
+                                    success=True,
+                                    data=[],
+                                    row_count=0,
+                                    execution_time_ms=execution_time,
+                                    dataset_id=dataset_id,
+                                    dataset_name=dataset_name
+                                )
+                        else:
+                            return DAXQueryResult(
+                                success=False,
+                                error="Query returned no results",
+                                execution_time_ms=execution_time
+                            )
+                    else:
+                        error_text = await response.text()
+                        error_json = {}
+                        try:
+                            error_json = json.loads(error_text)
+                            error_message = error_json.get("error", {}).get("message", error_text)
+                        except:
+                            error_message = error_text
+                            
+                        logger.error(f"DAX query failed: {response.status} - {error_message}")
+                        
+                        return DAXQueryResult(
+                            success=False,
+                            error=error_message,
+                            execution_time_ms=execution_time
+                        )
+                        
+        except Exception as e:
+            logger.error(f"Error executing DAX query: {e}")
+            return DAXQueryResult(
+                success=False,
+                error=str(e)
+            )
+    
+    async def _find_workspace_for_dataset(self, access_token: str, dataset_id: str) -> Optional[str]:
+        """Find which workspace contains a dataset"""
+        # First check cache
+        for ws_id, ws in self._workspace_cache.items():
+            # Need to check if dataset belongs to this workspace
+            datasets = await self.get_datasets(access_token, ws_id)
+            if any(d.id == dataset_id for d in datasets):
+                return ws_id
         
-        result = await SQL_TRANSLATOR.translate_to_sql(query)
+        # If not in cache, search all workspaces
+        workspaces = await self.get_user_workspaces(access_token)
+        for workspace in workspaces:
+            datasets = await self.get_datasets(access_token, workspace.id)
+            if any(d.id == dataset_id for d in datasets):
+                return workspace.id
         
-        return json_response({
-            'status': 'success',
-            'query': result.query,
-            'database': result.database,
-            'explanation': result.explanation,
-            'confidence': result.confidence,
-            'warnings': result.warnings,
-            'error': result.error
-        })
-    except Exception as e:
-        return json_response({
-            'status': 'error',
-            'error': str(e)
-        }, status=500)
-
-async def test_error_analysis(req: Request) -> Response:
-    """Test endpoint for error analysis"""
-    try:
-        data = await req.json()
-        
-        if not SQL_TRANSLATOR:
-            return json_response({
-                'status': 'error',
-                'error': 'SQL Translator not available'
-            })
-        
-        analysis = await SQL_TRANSLATOR.analyze_sql_error(
-            original_query=data.get('query', ''),
-            error_message=data.get('error', ''),
-            database=data.get('database', 'demo'),
-            user_intent=data.get('user_intent')
+        return None
+    
+    async def _get_refresh_history(self, access_token: str, dataset_id: str) -> Dict[str, Any]:
+        """Get refresh history for a dataset"""
+        try:
+            workspace_id = await self._find_workspace_for_dataset(access_token, dataset_id)
+            if not workspace_id:
+                return {}
+            
+            headers = {
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": "application/json"
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/groups/{workspace_id}/datasets/{dataset_id}/refreshes",
+                    headers=headers,
+                    params={"$top": 1}
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        refreshes = data.get("value", [])
+                        
+                        if refreshes:
+                            latest = refreshes[0]
+                            return {
+                                "last_refresh": latest.get("endTime"),
+                                "status": latest.get("status"),
+                                "refresh_type": latest.get("refreshType")
+                            }
+                    
+                    return {}
+                    
+        except Exception as e:
+            logger.error(f"Error getting refresh history: {e}")
+            return {}
+    
+    async def _discover_tables(self, access_token: str, dataset_id: str) -> List[Dict[str, Any]]:
+        """Discover tables in a dataset using DAX query"""
+        query = """
+        EVALUATE
+        SELECTCOLUMNS(
+            INFO.TABLES(),
+            "TableName", [Name],
+            "Description", [Description],
+            "IsHidden", [IsHidden]
         )
+        """
         
-        return json_response({
-            'status': 'success',
-            'error_type': analysis.error_type,
-            'explanation': analysis.explanation,
-            'suggested_fix': analysis.suggested_fix,
-            'fixed_query': analysis.fixed_query,
-            'confidence': analysis.confidence,
-            'alternatives': analysis.alternative_queries,
-            'discovery_queries': analysis.discovery_queries
-        })
-    except Exception as e:
-        return json_response({
-            'status': 'error',
-            'error': str(e)
-        }, status=500)
-
-# Add test routes
-APP.router.add_post("/api/test-translation", test_sql_translation)
-APP.router.add_post("/api/test-error-analysis", test_error_analysis)
-
-# Simple info endpoint
-async def info(req: Request) -> Response:
-    """Information about the application"""
-    info_data = {
-        'name': 'SQL Assistant Enhanced',
-        'version': '2.1.0',
-        'features': [
-            'SQL Console with natural language support',
-            'Intelligent error analysis and query fixing',
-            'Multi-database standardization checks',
-            'Discovery queries for finding correct object names',
-            'Admin Dashboard with system monitoring',
-            'Azure OpenAI integration with token tracking',
-            'Azure SQL Function connectivity'
-        ],
-        'new_features': [
-            'Error analysis when queries fail',
-            'One-click query fixes',
-            'Alternative query suggestions',
-            'Discovery queries to find tables/columns',
-            'Enhanced multi-database support'
-        ],
-        'endpoints': [
-            {'path': '/', 'description': 'Home page'},
-            {'path': '/console', 'description': 'SQL Console with error handling'},
-            {'path': '/admin', 'description': 'Admin Dashboard'},
-            {'path': '/health', 'description': 'Health check with token usage'},
-            {'path': '/info', 'description': 'This endpoint'},
-            {'path': '/api/test-translation', 'description': 'Test SQL translation'},
-            {'path': '/api/test-error-analysis', 'description': 'Test error analysis'}
-        ]
-    }
+        result = await self.execute_dax_query(access_token, dataset_id, query)
+        
+        if result.success and result.data:
+            return [
+                {
+                    "name": row.get("TableName"),
+                    "description": row.get("Description"),
+                    "is_hidden": row.get("IsHidden", False)
+                }
+                for row in result.data
+                if not row.get("IsHidden", False)
+            ]
+        
+        return []
     
-    # Add token usage if available
-    if SQL_TRANSLATOR:
-        info_data['token_usage'] = SQL_TRANSLATOR.get_usage_summary()
-    
-    return json_response(info_data)
-
-APP.router.add_get("/info", info)
-
-# Main entry point
-if __name__ == "__main__":
-    try:
-        PORT = int(os.environ.get("PORT", 8000))
-        logger.info(f"Starting enhanced application on port {PORT}")
-        logger.info(f"Access the application at: http://localhost:{PORT}")
-        
-        # Log available endpoints
-        logger.info("Available endpoints:")
-        logger.info("  - / (Home)")
-        logger.info("  - /console (SQL Console with Error Analysis)")
-        logger.info("  - /admin (Admin Dashboard)")
-        logger.info("  - /health (Health Check)")
-        logger.info("  - /info (Application Info)")
-        logger.info("  - /api/test-translation (Test Translation)")
-        logger.info("  - /api/test-error-analysis (Test Error Analysis)")
-        
-        web.run_app(
-            APP,
-            host="0.0.0.0",
-            port=PORT,
-            access_log_format='%a %t "%r" %s %b "%{Referer}i" "%{User-Agent}i" %Tf'
+    async def _discover_measures(self, access_token: str, dataset_id: str) -> List[Dict[str, Any]]:
+        """Discover measures in a dataset using DAX query"""
+        query = """
+        EVALUATE
+        SELECTCOLUMNS(
+            INFO.MEASURES(),
+            "MeasureName", [Name],
+            "TableName", [TableName],
+            "Expression", [Expression],
+            "Description", [Description],
+            "FormatString", [FormatString]
         )
-    except KeyboardInterrupt:
-        logger.info("Application stopped by user")
-    except Exception as e:
-        logger.error(f"Failed to start application: {e}", exc_info=True)
-        raise
+        """
+        
+        result = await self.execute_dax_query(access_token, dataset_id, query)
+        
+        if result.success and result.data:
+            return [
+                {
+                    "name": row.get("MeasureName"),
+                    "table": row.get("TableName"),
+                    "expression": row.get("Expression"),
+                    "description": row.get("Description"),
+                    "format_string": row.get("FormatString")
+                }
+                for row in result.data
+            ]
+        
+        return []
+    
+    def validate_dax_query(self, query: str) -> Tuple[bool, Optional[str]]:
+        """Basic validation of DAX query syntax"""
+        query = query.strip()
+        
+        # Check if query is empty
+        if not query:
+            return False, "Query cannot be empty"
+        
+        # Check for required EVALUATE statement
+        if not query.upper().startswith("EVALUATE"):
+            return False, "DAX query must start with EVALUATE"
+        
+        # Check for basic syntax errors
+        open_parens = query.count("(")
+        close_parens = query.count(")")
+        if open_parens != close_parens:
+            return False, f"Mismatched parentheses: {open_parens} opening, {close_parens} closing"
+        
+        # Check for dangerous operations (we only want read operations)
+        dangerous_keywords = ["REFRESH", "CREATE", "DELETE", "DROP", "ALTER"]
+        for keyword in dangerous_keywords:
+            if keyword in query.upper():
+                return False, f"Query contains forbidden operation: {keyword}"
+        
+        return True, None
+    
+    async def get_quick_insights(self, access_token: str, dataset_id: str) -> Dict[str, Any]:
+        """Get quick insights about a dataset"""
+        try:
+            # Get basic metrics
+            table_count_query = """
+            EVALUATE
+            ROW(
+                "TableCount", COUNTROWS(INFO.TABLES()),
+                "MeasureCount", COUNTROWS(INFO.MEASURES())
+            )
+            """
+            
+            result = await self.execute_dax_query(access_token, dataset_id, table_count_query)
+            
+            insights = {
+                "table_count": 0,
+                "measure_count": 0,
+                "key_measures": [],
+                "data_freshness": "Unknown"
+            }
+            
+            if result.success and result.data:
+                insights["table_count"] = result.data[0].get("TableCount", 0)
+                insights["measure_count"] = result.data[0].get("MeasureCount", 0)
+            
+            # Get refresh history
+            refresh_info = await self._get_refresh_history(access_token, dataset_id)
+            if refresh_info.get("last_refresh"):
+                insights["data_freshness"] = refresh_info["last_refresh"]
+            
+            return insights
+            
+        except Exception as e:
+            logger.error(f"Error getting quick insights: {e}")
+            return {}
 
-# End of file
+# Create singleton instance
+powerbi_client = PowerBIClient()
+
+# Export
+__all__ = ['PowerBIClient', 'powerbi_client', 'Workspace', 'Dataset', 'DAXQueryResult']
