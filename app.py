@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # app.py - Main SQL Assistant Application with Enhanced Error Handling and Power BI Analyst
 """
-SQL Assistant Application - Fixed Power BI Analyst Integration v2
-Force route registration with better error handling
+SQL Assistant Application - Fixed Power BI Analyst Integration v3
+Better error handling and module loading diagnostics
 """
 
 import os
@@ -11,6 +11,8 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
+import sys
+import traceback
 
 # Web framework
 from aiohttp import web
@@ -39,6 +41,9 @@ LOADED_FEATURES = {
     "sql_console": False,
     "powerbi_analyst": False
 }
+
+# Track import errors
+IMPORT_ERRORS = {}
 
 # Check environment variables
 def check_environment():
@@ -138,6 +143,7 @@ if not missing_vars or all(var not in missing_vars for var in ["AZURE_OPENAI_END
         LOADED_FEATURES["sql_translator"] = True
     except Exception as e:
         logger.error(f"❌ Failed to initialize SQL Translator: {e}")
+        IMPORT_ERRORS["sql_translator"] = str(e)
 
 # Health check endpoint
 async def health(req: Request) -> Response:
@@ -161,7 +167,7 @@ async def health(req: Request) -> Response:
         
         health_status = {
             "status": "healthy",
-            "version": "2.2.2",  # Updated version
+            "version": "2.2.3",  # Updated version
             "timestamp": datetime.now().isoformat(),
             "environment": DEPLOYMENT_ENV,
             "services": {
@@ -193,7 +199,9 @@ async def health(req: Request) -> Response:
                 "total": len(list(req.app.router.routes())),
                 "analyst_routes": analyst_routes[:5] if analyst_routes else []  # Show first 5
             },
-            "missing_vars": missing_vars
+            "missing_vars": missing_vars,
+            "import_errors": IMPORT_ERRORS,
+            "python_version": sys.version
         }
         
         # Add token usage if available
@@ -348,7 +356,7 @@ async def index(req: Request) -> Response:
     <body>
         <div class="container">
             <h1>🤖 SQL Assistant</h1>
-            <div class="version">Version 2.2.2 - Enhanced with Power BI Integration</div>
+            <div class="version">Version 2.2.3 - Enhanced with Power BI Integration</div>
             
             <div class="features">
                 <h3>✨ What's New</h3>
@@ -390,8 +398,8 @@ async def index(req: Request) -> Response:
                 <strong>Debug Info:</strong><br>
                 Power BI Routes Loaded: {LOADED_FEATURES["powerbi_analyst"]}<br>
                 Power BI Configured: {powerbi_configured}<br>
-                Check /health for detailed route information<br>
-                If analyst shows "Not Loaded", check logs for import errors
+                Import Errors: {len(IMPORT_ERRORS)}<br>
+                Check /health for detailed diagnostics
             </div>
         </div>
     </body>
@@ -420,11 +428,12 @@ async def info(req: Request) -> Response:
     
     info_data = {
         'name': 'SQL Assistant Enhanced with Power BI',
-        'version': '2.2.2',
+        'version': '2.2.3',
         'features_loaded': LOADED_FEATURES,
         'powerbi_configured': powerbi_configured,
         'routes_count': len(list(APP.router.routes())),
-        'timestamp': datetime.now().isoformat()
+        'timestamp': datetime.now().isoformat(),
+        'import_errors': IMPORT_ERRORS
     }
     
     # Add token usage if available
@@ -444,8 +453,10 @@ try:
     LOADED_FEATURES["admin_dashboard"] = True
 except ImportError as e:
     logger.error(f"❌ Failed to add admin dashboard: {e}")
+    IMPORT_ERRORS["admin_dashboard"] = str(e)
 except Exception as e:
     logger.error(f"❌ Error adding admin dashboard: {e}", exc_info=True)
+    IMPORT_ERRORS["admin_dashboard"] = str(e) + "\n" + traceback.format_exc()
 
 # Import and add SQL console with enhanced error handling
 try:
@@ -456,10 +467,12 @@ try:
     LOADED_FEATURES["sql_console"] = True
 except ImportError as e:
     logger.error(f"❌ Failed to add SQL console: {e}")
+    IMPORT_ERRORS["sql_console"] = str(e)
 except Exception as e:
     logger.error(f"❌ Error adding SQL console: {e}", exc_info=True)
+    IMPORT_ERRORS["sql_console"] = str(e) + "\n" + traceback.format_exc()
 
-# Import and add Power BI Analyst - FORCE LOADING
+# Import and add Power BI Analyst - BETTER ERROR HANDLING
 logger.info("=" * 60)
 logger.info("ATTEMPTING TO LOAD POWER BI ANALYST...")
 logger.info("=" * 60)
@@ -505,85 +518,142 @@ if not powerbi_configured:
     APP.router.add_get('/analyst', analyst_not_configured)
     logger.info("Added placeholder route for unconfigured Power BI Analyst")
 else:
-    # Try multiple approaches to load analyst
+    # Try to load analyst with detailed error tracking
     analyst_loaded = False
     
-    # Approach 1: Try normal import
     try:
-        logger.info("Approach 1: Trying normal import...")
-        from analyst_routes import add_analyst_routes
-        add_analyst_routes(APP)
-        logger.info("✓ Power BI Analyst routes added via normal import")
-        analyst_loaded = True
-        LOADED_FEATURES["powerbi_analyst"] = True
-    except Exception as e:
-        logger.error(f"Approach 1 failed: {e}")
+        logger.info("Testing individual component imports...")
         
-    # Approach 2: Try importing individual components
-    if not analyst_loaded:
+        # Test each import separately to identify the failing component
+        components_status = {}
+        
+        # Test powerbi_client
         try:
-            logger.info("Approach 2: Trying component imports...")
-            
-            # Test imports one by one
-            components = ["powerbi_client", "analyst_translator", "analysis_agent", "analyst_ui"]
-            for component in components:
-                try:
-                    exec(f"import {component}")
-                    logger.info(f"  ✓ {component} imported")
-                except Exception as e:
-                    logger.error(f"  ✗ {component} failed: {e}")
-                    raise
-            
-            # Now try analyst_routes
+            logger.info("  Testing powerbi_client import...")
+            import powerbi_client
+            components_status['powerbi_client'] = "✓ Loaded"
+            logger.info("  ✓ powerbi_client imported successfully")
+        except Exception as e:
+            components_status['powerbi_client'] = f"✗ Error: {str(e)}"
+            logger.error(f"  ✗ powerbi_client import failed: {e}")
+            IMPORT_ERRORS['powerbi_client'] = str(e) + "\n" + traceback.format_exc()
+            raise
+        
+        # Test analyst_translator
+        try:
+            logger.info("  Testing analyst_translator import...")
+            import analyst_translator
+            components_status['analyst_translator'] = "✓ Loaded"
+            logger.info("  ✓ analyst_translator imported successfully")
+        except Exception as e:
+            components_status['analyst_translator'] = f"✗ Error: {str(e)}"
+            logger.error(f"  ✗ analyst_translator import failed: {e}")
+            IMPORT_ERRORS['analyst_translator'] = str(e) + "\n" + traceback.format_exc()
+            raise
+        
+        # Test analysis_agent
+        try:
+            logger.info("  Testing analysis_agent import...")
+            import analysis_agent
+            components_status['analysis_agent'] = "✓ Loaded"
+            logger.info("  ✓ analysis_agent imported successfully")
+        except Exception as e:
+            components_status['analysis_agent'] = f"✗ Error: {str(e)}"
+            logger.error(f"  ✗ analysis_agent import failed: {e}")
+            IMPORT_ERRORS['analysis_agent'] = str(e) + "\n" + traceback.format_exc()
+            raise
+        
+        # Test analyst_ui
+        try:
+            logger.info("  Testing analyst_ui import...")
+            import analyst_ui
+            components_status['analyst_ui'] = "✓ Loaded"
+            logger.info("  ✓ analyst_ui imported successfully")
+        except Exception as e:
+            components_status['analyst_ui'] = f"✗ Error: {str(e)}"
+            logger.error(f"  ✗ analyst_ui import failed: {e}")
+            IMPORT_ERRORS['analyst_ui'] = str(e) + "\n" + traceback.format_exc()
+            raise
+        
+        # Now try analyst_routes
+        try:
+            logger.info("  Testing analyst_routes import...")
             from analyst_routes import add_analyst_routes
+            components_status['analyst_routes'] = "✓ Loaded"
+            logger.info("  ✓ analyst_routes imported successfully")
+            
+            # Try to add routes
+            logger.info("Adding analyst routes to application...")
             add_analyst_routes(APP)
-            logger.info("✓ Power BI Analyst routes added via component approach")
+            logger.info("✓ Power BI Analyst routes added successfully")
             analyst_loaded = True
             LOADED_FEATURES["powerbi_analyst"] = True
             
         except Exception as e:
-            logger.error(f"Approach 2 failed: {e}", exc_info=True)
-    
-    # Approach 3: Add minimal routes directly
-    if not analyst_loaded:
-        try:
-            logger.info("Approach 3: Adding minimal analyst routes directly...")
+            components_status['analyst_routes'] = f"✗ Error: {str(e)}"
+            logger.error(f"  ✗ analyst_routes import/add failed: {e}")
+            IMPORT_ERRORS['analyst_routes'] = str(e) + "\n" + traceback.format_exc()
+            raise
             
-            async def analyst_main(request):
-                return Response(text="""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <title>Power BI Analyst - Loading Error</title>
-                    <style>
-                        body { font-family: Arial, sans-serif; padding: 40px; }
-                        .error { background: #fee; padding: 20px; border-radius: 5px; }
-                    </style>
-                </head>
-                <body>
-                    <h1>Power BI Analyst</h1>
-                    <div class="error">
-                        <h2>Module Loading Error</h2>
-                        <p>The Power BI Analyst module failed to load properly.</p>
-                        <p>Check the application logs for detailed error information.</p>
-                        <p>Common causes:</p>
-                        <ul>
-                            <li>Missing Python dependencies (msal)</li>
-                            <li>Import errors in analyst modules</li>
-                            <li>Syntax errors in Python files</li>
-                        </ul>
-                        <p><a href="/health">Check Health Status</a> | <a href="/">Back to Home</a></p>
+    except Exception as e:
+        logger.error(f"Failed to load Power BI Analyst: {e}", exc_info=True)
+        IMPORT_ERRORS['powerbi_analyst'] = str(e) + "\n" + traceback.format_exc()
+        
+        # Add detailed error page
+        async def analyst_error(request):
+            import_errors_html = ""
+            for module, error in IMPORT_ERRORS.items():
+                if 'powerbi' in module or 'analyst' in module:
+                    import_errors_html += f"""
+                    <div class="error-detail">
+                        <h4>{module}</h4>
+                        <pre>{error}</pre>
                     </div>
-                </body>
-                </html>
-                """, content_type='text/html')
+                    """
             
-            APP.router.add_get('/analyst', analyst_main)
-            APP.router.add_get('/analyst/', analyst_main)
-            logger.info("✓ Added minimal analyst error routes")
-            
-        except Exception as e:
-            logger.error(f"Approach 3 failed: {e}")
+            return Response(text=f"""
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <title>Power BI Analyst - Loading Error</title>
+                <style>
+                    body {{ font-family: Arial, sans-serif; padding: 40px; background: #f5f5f5; }}
+                    .container {{ max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; }}
+                    h1 {{ color: #333; }}
+                    .error {{ background: #fee; padding: 20px; border-radius: 5px; margin: 20px 0; }}
+                    .error-detail {{ background: #f0f0f0; padding: 15px; margin: 10px 0; border-radius: 5px; }}
+                    .error-detail h4 {{ margin-top: 0; color: #c00; }}
+                    pre {{ overflow: auto; white-space: pre-wrap; font-size: 12px; }}
+                    .suggestions {{ background: #e6f3ff; padding: 15px; border-radius: 5px; margin: 20px 0; }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>Power BI Analyst - Module Loading Error</h1>
+                    <div class="error">
+                        <h2>The Power BI Analyst module failed to load</h2>
+                        <h3>Import Errors:</h3>
+                        {import_errors_html}
+                    </div>
+                    <div class="suggestions">
+                        <h3>Troubleshooting Steps:</h3>
+                        <ol>
+                            <li>Check the application logs in Azure Portal</li>
+                            <li>Verify all required packages are in requirements.txt</li>
+                            <li>Ensure MSAL is installed: <code>pip install msal</code></li>
+                            <li>Check for syntax errors in the Python files</li>
+                            <li>Restart the App Service after fixing issues</li>
+                        </ol>
+                    </div>
+                    <p><a href="/health">Check Health Status</a> | <a href="/">Back to Home</a></p>
+                </div>
+            </body>
+            </html>
+            """, content_type='text/html')
+        
+        APP.router.add_get('/analyst', analyst_error)
+        APP.router.add_get('/analyst/', analyst_error)
+        logger.info("✓ Added error page for Power BI Analyst")
 
 logger.info("=" * 60)
 logger.info(f"POWER BI ANALYST LOADING COMPLETE - Success: {LOADED_FEATURES.get('powerbi_analyst', False)}")
@@ -606,8 +676,9 @@ async def on_startup(app):
     """Perform startup tasks"""
     logger.info("=== SQL Assistant Enhanced Startup ===")
     logger.info(f"Environment: {DEPLOYMENT_ENV}")
-    logger.info(f"Version: 2.2.2")
+    logger.info(f"Version: 2.2.3")
     logger.info(f"Features Loaded: {LOADED_FEATURES}")
+    logger.info(f"Import Errors: {len(IMPORT_ERRORS)}")
     
     if missing_vars:
         logger.warning(f"⚠️ Missing environment variables: {', '.join(missing_vars)}")
@@ -627,6 +698,12 @@ async def on_startup(app):
     # Final route check
     analyst_routes = [str(r) for r in app.router.routes() if '/analyst' in str(r)]
     logger.info(f"Analyst routes found: {len(analyst_routes)}")
+    
+    # Log import errors if any
+    if IMPORT_ERRORS:
+        logger.error("=== Import Errors ===")
+        for module, error in IMPORT_ERRORS.items():
+            logger.error(f"{module}: {error.splitlines()[0]}")  # First line only
     
     # Create necessary directories
     dirs = ['.token_usage', 'logs', '.query_history', '.error_logs', '.analyst_cache']

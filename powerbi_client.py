@@ -1,7 +1,7 @@
 # powerbi_client.py - Power BI Authentication and API Client
 """
 Power BI Client - Handles authentication and API calls to Power BI service
-Updated to ensure proper workspace access control and better error handling
+Fixed version with better error handling and import management
 """
 
 import os
@@ -12,8 +12,21 @@ from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 import aiohttp
-from msal import ConfidentialClientApplication
-import jwt
+
+# Handle MSAL import with fallback
+try:
+    from msal import ConfidentialClientApplication
+    MSAL_AVAILABLE = True
+except ImportError:
+    MSAL_AVAILABLE = False
+    ConfidentialClientApplication = None
+
+# Handle JWT import (pyjwt installs as jwt)
+try:
+    import jwt
+    JWT_AVAILABLE = True
+except ImportError:
+    JWT_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +77,13 @@ class PowerBIClient:
     """Client for interacting with Power BI REST API"""
     
     def __init__(self):
+        # Check dependencies first
+        if not MSAL_AVAILABLE:
+            logger.error("MSAL library not available. Install with: pip install msal")
+            self.configured = False
+            self.msal_app = None
+            return
+            
         # Load credentials from environment
         self.credentials = PowerBICredentials(
             tenant_id=os.environ.get("POWERBI_TENANT_ID", "").strip(),
@@ -76,17 +96,20 @@ class PowerBIClient:
         logger.info(f"  Tenant ID: {'SET' if self.credentials.tenant_id else 'NOT SET'}")
         logger.info(f"  Client ID: {'SET' if self.credentials.client_id else 'NOT SET'}")
         logger.info(f"  Client Secret: {'SET' if self.credentials.client_secret else 'NOT SET'}")
+        logger.info(f"  MSAL Available: {MSAL_AVAILABLE}")
+        logger.info(f"  JWT Available: {JWT_AVAILABLE}")
         
         # Validate credentials
         if not all([self.credentials.tenant_id, self.credentials.client_id, self.credentials.client_secret]):
             logger.warning("Power BI credentials not fully configured")
             self.configured = False
+            self.msal_app = None
         else:
             self.configured = True
             logger.info("Power BI credentials are fully configured")
         
         # Initialize MSAL client
-        if self.configured:
+        if self.configured and MSAL_AVAILABLE:
             try:
                 self.msal_app = ConfidentialClientApplication(
                     self.credentials.client_id,
@@ -582,11 +605,21 @@ class PowerBIClient:
             "api_accessible": False,
             "workspaces_accessible": False,
             "errors": [],
-            "warnings": []
+            "warnings": [],
+            "dependencies": {
+                "msal": MSAL_AVAILABLE,
+                "jwt": JWT_AVAILABLE
+            }
         }
         
         logger.info("Starting Power BI configuration validation...")
         
+        # Check dependencies
+        if not MSAL_AVAILABLE:
+            validation_result["errors"].append("MSAL library not installed. Run: pip install msal")
+            logger.error("✗ MSAL library not available")
+            return validation_result
+            
         # Check credentials
         if all([self.credentials.tenant_id, self.credentials.client_id, self.credentials.client_secret]):
             validation_result["credentials_present"] = True
@@ -645,7 +678,7 @@ class PowerBIClient:
     
     def is_configured(self) -> bool:
         """Check if Power BI client is properly configured"""
-        return self.configured
+        return self.configured and MSAL_AVAILABLE
 
 # Create singleton instance
 powerbi_client = PowerBIClient()
