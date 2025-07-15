@@ -81,7 +81,7 @@ def get_analyst_html():
                         <div class="message-header">
                             <span class="icon">🤖</span>
                             <span class="name">Power BI Analyst</span>
-                            <span class="time">${new Date().toLocaleTimeString()}</span>
+                            <span class="time">${{new Date().toLocaleTimeString()}}</span>
                         </div>
                         <div class="message-content">
                             <p>Welcome! I'm your AI-powered business analyst for Power BI.</p>
