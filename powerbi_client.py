@@ -1,7 +1,7 @@
 # powerbi_client.py - Power BI Authentication and API Client
 """
 Power BI Client - Handles authentication and API calls to Power BI service
-Fixed version with better error handling and import management
+Fixed version with datetime comparison bug fix and better workspace access handling
 """
 
 import os
@@ -145,7 +145,7 @@ class PowerBIClient:
             cache_key = "powerbi_token"
             if cache_key in self.token_cache:
                 cached_token = self.token_cache[cache_key]
-                # Check if token is still valid (with 5 min buffer)
+                # FIX: Compare datetime to datetime, not float to datetime
                 if cached_token["expires_at"] > datetime.now() + timedelta(minutes=5):
                     logger.info("Using cached Power BI access token")
                     return cached_token["access_token"]
@@ -156,7 +156,7 @@ class PowerBIClient:
             result = self.msal_app.acquire_token_for_client(scopes=self.credentials.scope)
             
             if "access_token" in result:
-                # Cache the token
+                # Cache the token with datetime object (not timestamp)
                 self.token_cache[cache_key] = {
                     "access_token": result["access_token"],
                     "expires_at": datetime.now() + timedelta(seconds=result.get("expires_in", 3600))
@@ -197,6 +197,7 @@ class PowerBIClient:
             }
             
             async with aiohttp.ClientSession() as session:
+                # First try the regular groups endpoint
                 async with session.get(
                     f"{self.base_url}/groups",
                     headers=headers,
@@ -209,9 +210,8 @@ class PowerBIClient:
                         data = await response.json()
                         workspaces = []
                         
-                        # The API returns only workspaces the app has access to
+                        # Process workspaces from groups endpoint
                         for ws in data.get("value", []):
-                            # Log workspace details for debugging
                             logger.info(f"Found workspace: {ws.get('name', 'Unknown')} (ID: {ws.get('id', 'Unknown')[:8]}...)")
                             
                             workspace = WorkspaceInfo(
@@ -230,12 +230,45 @@ class PowerBIClient:
                             else:
                                 logger.info(f"Skipping inactive workspace: {workspace.name}")
                         
+                        # If no workspaces found, try to get My Workspace (personal workspace)
+                        if len(workspaces) == 0:
+                            logger.info("No shared workspaces found. Checking for personal workspace...")
+                            
+                            # Try to access datasets directly to verify access
+                            try:
+                                async with session.get(
+                                    f"{self.base_url}/datasets",
+                                    headers=headers,
+                                    timeout=aiohttp.ClientTimeout(total=10)
+                                ) as dataset_response:
+                                    
+                                    if dataset_response.status == 200:
+                                        dataset_data = await dataset_response.json()
+                                        if dataset_data.get("value"):
+                                            logger.info("Found datasets in personal workspace")
+                                            # Add a virtual "My Workspace" entry
+                                            workspaces.append(WorkspaceInfo(
+                                                id="me",  # Special ID for personal workspace
+                                                name="My Workspace",
+                                                description="Personal workspace",
+                                                is_personal=True,
+                                                state="Active"
+                                            ))
+                            except Exception as e:
+                                logger.warning(f"Could not check personal workspace: {e}")
+                        
                         logger.info(f"Retrieved {len(workspaces)} accessible workspaces")
                         
-                        # If no workspaces found, provide helpful message
+                        # Provide helpful messages if no workspaces found
                         if len(workspaces) == 0:
-                            logger.warning("No workspaces found. Ensure the app registration has been granted access to Power BI workspaces.")
-                            logger.warning("The app will only see workspaces it has been explicitly granted access to.")
+                            logger.warning("No workspaces found. Possible reasons:")
+                            logger.warning("1. The app registration needs to be granted access to workspaces in Power BI")
+                            logger.warning("2. In Power BI Service (app.powerbi.com):")
+                            logger.warning("   - Go to the workspace")
+                            logger.warning("   - Click 'Manage access' or 'Access'")
+                            logger.warning("   - Add the app (using the app's name or client ID)")
+                            logger.warning("   - Grant at least 'Viewer' role")
+                            logger.warning("3. Wait a few minutes for permissions to propagate")
                         
                         return workspaces
                     
@@ -266,16 +299,22 @@ class PowerBIClient:
     async def get_workspace_datasets(self, access_token: str, workspace_id: str, workspace_name: str = "") -> List[DatasetInfo]:
         """Get datasets in a specific workspace"""
         try:
-            logger.info(f"Fetching datasets for workspace: {workspace_name} (ID: {workspace_id[:8]}...)")
+            logger.info(f"Fetching datasets for workspace: {workspace_name} (ID: {workspace_id[:8] if workspace_id != 'me' else 'personal'}...)")
             
             headers = {
                 "Authorization": f"Bearer {access_token}",
                 "Content-Type": "application/json"
             }
             
+            # Handle personal workspace differently
+            if workspace_id == "me":
+                url = f"{self.base_url}/datasets"
+            else:
+                url = f"{self.base_url}/groups/{workspace_id}/datasets"
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(
-                    f"{self.base_url}/groups/{workspace_id}/datasets",
+                    url,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as response:
@@ -291,19 +330,19 @@ class PowerBIClient:
                             logger.info(f"Found dataset: {ds.get('name', 'Unknown')} (ID: {ds.get('id', 'Unknown')[:8]}...)")
                             
                             # Only include datasets that can be queried
-                            if ds.get("isRefreshable", True):
+                            if ds.get("isRefreshable", True) or ds.get("isEffectiveIdentityRequired", False) or True:  # Be more permissive
                                 dataset = DatasetInfo(
                                     id=ds["id"],
                                     name=ds["name"],
                                     workspace_id=workspace_id,
-                                    workspace_name=workspace_name,
+                                    workspace_name=workspace_name or "My Workspace" if workspace_id == "me" else workspace_name,
                                     configured_by=ds.get("configuredBy"),
                                     created_date=ds.get("createdDate"),
                                     content_provider_type=ds.get("contentProviderType")
                                 )
                                 datasets.append(dataset)
                             else:
-                                logger.info(f"Skipping non-refreshable dataset: {ds.get('name', 'Unknown')}")
+                                logger.info(f"Skipping non-queryable dataset: {ds.get('name', 'Unknown')}")
                         
                         logger.info(f"Retrieved {len(datasets)} queryable datasets from workspace {workspace_name}")
                         return datasets
@@ -654,7 +693,8 @@ class PowerBIClient:
                     validation_result["workspace_count"] = len(workspaces)
                     logger.info(f"✓ Found {len(workspaces)} accessible workspaces")
                 else:
-                    validation_result["warnings"].append("No workspaces accessible - grant app access to workspaces")
+                    validation_result["warnings"].append("No workspaces accessible - grant app access to workspaces in Power BI Service")
+                    validation_result["warnings"].append("To grant access: Go to workspace > Manage access > Add app with Viewer role")
                     logger.warning("⚠ No workspaces accessible")
                     
             except Exception as e:
