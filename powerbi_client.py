@@ -1,7 +1,7 @@
 # powerbi_client.py - Power BI Authentication and API Client
 """
 Power BI Client - Handles authentication and API calls to Power BI service
-Fixed version with proper datetime handling and better error messages
+Enhanced with better debugging for workspace access issues
 """
 
 import os
@@ -131,7 +131,7 @@ class PowerBIClient:
         logger.info(f"Power BI Client initialized - Configured: {self.configured}")
     
     async def get_access_token(self) -> Optional[str]:
-        """Get access token for Power BI API"""
+        """Get access token for Power BI API with enhanced debugging"""
         if not self.configured:
             logger.error("Power BI client not configured - cannot get access token")
             return None
@@ -143,30 +143,12 @@ class PowerBIClient:
         try:
             # Check cache
             cache_key = "powerbi_token"
-            current_time = datetime.now()
-            
             if cache_key in self.token_cache:
                 cached_token = self.token_cache[cache_key]
-                expires_at = cached_token.get("expires_at")
-                
-                # Handle both datetime and timestamp formats for backward compatibility
-                if expires_at:
-                    if isinstance(expires_at, (int, float)):
-                        # Convert timestamp to datetime
-                        expires_at_dt = datetime.fromtimestamp(expires_at)
-                    elif isinstance(expires_at, datetime):
-                        expires_at_dt = expires_at
-                    else:
-                        # Invalid format, get new token
-                        logger.warning(f"Invalid expires_at format: {type(expires_at)}")
-                        expires_at_dt = current_time
-                    
-                    # Check if token is still valid (with 5 minute buffer)
-                    if expires_at_dt > current_time + timedelta(minutes=5):
-                        logger.info("Using cached Power BI access token")
-                        return cached_token["access_token"]
-                    else:
-                        logger.info("Cached token expired, acquiring new token")
+                # FIX: Compare datetime to datetime, not float to datetime
+                if cached_token["expires_at"] > datetime.now() + timedelta(minutes=5):
+                    logger.info("Using cached Power BI access token")
+                    return cached_token["access_token"]
             
             logger.info("Acquiring new Power BI access token...")
             
@@ -174,13 +156,34 @@ class PowerBIClient:
             result = self.msal_app.acquire_token_for_client(scopes=self.credentials.scope)
             
             if "access_token" in result:
-                # Cache the token with datetime object
-                expires_in = result.get("expires_in", 3600)
+                # Cache the token with datetime object (not timestamp)
                 self.token_cache[cache_key] = {
                     "access_token": result["access_token"],
-                    "expires_at": current_time + timedelta(seconds=expires_in)
+                    "expires_at": datetime.now() + timedelta(seconds=result.get("expires_in", 3600))
                 }
-                logger.info(f"Successfully acquired Power BI access token (expires in {expires_in} seconds)")
+                logger.info("Successfully acquired Power BI access token")
+                
+                # Decode token to check app permissions (if JWT available)
+                if JWT_AVAILABLE:
+                    try:
+                        # Decode without verification to inspect claims
+                        decoded = jwt.decode(result["access_token"], options={"verify_signature": False})
+                        logger.info(f"Token app ID: {decoded.get('appid', 'Unknown')}")
+                        logger.info(f"Token audience: {decoded.get('aud', 'Unknown')}")
+                        
+                        # Check for application permissions
+                        roles = decoded.get('roles', [])
+                        if roles:
+                            logger.info(f"Token application permissions (roles): {', '.join(roles)}")
+                        else:
+                            logger.warning("No application permissions (roles) found in token - using delegated permissions?")
+                        
+                        # Check scopes
+                        scp = decoded.get('scp', '')
+                        if scp:
+                            logger.info(f"Token delegated permissions (scp): {scp}")
+                    except Exception as e:
+                        logger.warning(f"Could not decode token for inspection: {e}")
                 
                 return result["access_token"]
             else:
@@ -202,7 +205,7 @@ class PowerBIClient:
             return None
     
     async def get_user_workspaces(self, access_token: str) -> List[WorkspaceInfo]:
-        """Get list of workspaces accessible to the user/app"""
+        """Get list of workspaces accessible to the user/app with enhanced debugging"""
         try:
             logger.info("Fetching accessible workspaces...")
             
@@ -212,116 +215,180 @@ class PowerBIClient:
             }
             
             async with aiohttp.ClientSession() as session:
-                # Try to get group workspaces
+                # First, let's check what kind of access we have
+                logger.info("Testing API access levels...")
+                
+                # Test 1: Try admin endpoint (requires Tenant.Read.All)
+                try:
+                    async with session.get(
+                        f"{self.base_url}/admin/workspaces?$top=5",
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=10)
+                    ) as admin_response:
+                        
+                        if admin_response.status == 200:
+                            logger.info("✓ Admin API access confirmed (Tenant.Read.All working)")
+                            admin_data = await admin_response.json()
+                            admin_workspaces = admin_data.get("value", [])
+                            logger.info(f"Admin API shows {len(admin_workspaces)} workspaces in tenant")
+                        else:
+                            logger.info(f"✗ Admin API access denied (status: {admin_response.status})")
+                except Exception as e:
+                    logger.info(f"✗ Admin API test failed: {e}")
+                
+                # Test 2: Regular groups endpoint
                 async with session.get(
                     f"{self.base_url}/groups",
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as response:
                     
-                    logger.info(f"Workspace API response status: {response.status}")
+                    logger.info(f"Groups API response status: {response.status}")
                     
                     if response.status == 200:
                         data = await response.json()
                         workspaces = []
                         
+                        # Log raw response for debugging
+                        logger.info(f"Groups API returned {len(data.get('value', []))} items")
+                        
                         # Process workspaces from groups endpoint
                         for ws in data.get("value", []):
-                            workspace_name = ws.get('name', 'Unknown')
-                            workspace_id = ws.get('id', 'Unknown')
-                            workspace_state = ws.get('state', 'Active')
-                            
-                            logger.info(f"Found workspace: {workspace_name} (ID: {workspace_id[:8]}..., State: {workspace_state})")
+                            logger.info(f"Found workspace: {ws.get('name', 'Unknown')} (ID: {ws.get('id', 'Unknown')[:8]}..., type: {ws.get('type', 'Unknown')}, state: {ws.get('state', 'Unknown')})")
                             
                             workspace = WorkspaceInfo(
-                                id=workspace_id,
-                                name=workspace_name,
+                                id=ws["id"],
+                                name=ws["name"],
                                 description=ws.get("description"),
                                 is_personal=ws.get("isPersonal", False),
                                 capacity_id=ws.get("capacityId"),
                                 type=ws.get("type", "Workspace"),
-                                state=workspace_state
+                                state=ws.get("state", "Active")
                             )
                             
                             # Only include active workspaces
-                            if workspace_state == "Active":
+                            if workspace.state == "Active":
                                 workspaces.append(workspace)
                             else:
-                                logger.info(f"Skipping inactive workspace: {workspace_name}")
+                                logger.info(f"Skipping inactive workspace: {workspace.name}")
                         
-                        # Always try to check personal workspace (My Workspace)
-                        logger.info("Checking for personal workspace access...")
+                        # Test 3: Check if we're a service principal
                         try:
                             async with session.get(
-                                f"{self.base_url}/datasets",
+                                f"{self.base_url}/apps",
                                 headers=headers,
                                 timeout=aiohttp.ClientTimeout(total=10)
-                            ) as dataset_response:
+                            ) as apps_response:
                                 
-                                if dataset_response.status == 200:
-                                    dataset_data = await dataset_response.json()
-                                    personal_datasets = dataset_data.get("value", [])
-                                    
-                                    if personal_datasets:
-                                        logger.info(f"Found {len(personal_datasets)} datasets in personal workspace")
-                                        # Add My Workspace if we found personal datasets
-                                        personal_workspace = WorkspaceInfo(
-                                            id="me",  # Special ID for personal workspace
-                                            name="My Workspace",
-                                            description="Personal workspace",
-                                            is_personal=True,
-                                            state="Active"
-                                        )
-                                        
-                                        # Check if not already added
-                                        if not any(ws.is_personal for ws in workspaces):
-                                            workspaces.insert(0, personal_workspace)  # Add at beginning
-                                            logger.info("Added My Workspace to available workspaces")
-                                    else:
-                                        logger.info("No datasets found in personal workspace")
-                                elif dataset_response.status == 401:
-                                    logger.warning("Unauthorized access to personal workspace datasets")
+                                if apps_response.status == 200:
+                                    apps_data = await apps_response.json()
+                                    logger.info(f"Apps API shows {len(apps_data.get('value', []))} apps")
                                 else:
-                                    logger.warning(f"Could not check personal workspace: Status {dataset_response.status}")
-                                    
+                                    logger.info(f"Apps API status: {apps_response.status}")
                         except Exception as e:
-                            logger.warning(f"Error checking personal workspace: {e}")
+                            logger.info(f"Apps API test: {e}")
                         
-                        logger.info(f"Total accessible workspaces: {len(workspaces)}")
+                        # Test 4: Try to get available features
+                        try:
+                            async with session.get(
+                                f"{self.base_url}/availableFeatures",
+                                headers=headers,
+                                timeout=aiohttp.ClientTimeout(total=10)
+                            ) as features_response:
+                                
+                                if features_response.status == 200:
+                                    features_data = await features_response.json()
+                                    features = features_data.get("features", [])
+                                    logger.info(f"Available features: {', '.join(features[:5])}...")
+                                else:
+                                    logger.info(f"Features API status: {features_response.status}")
+                        except Exception as e:
+                            logger.info(f"Features API test: {e}")
+                        
+                        # If no workspaces found through groups API
+                        if len(workspaces) == 0:
+                            logger.warning("No workspaces found through groups API")
+                            
+                            # Test 5: Try datasets endpoint to see if we have any access
+                            try:
+                                async with session.get(
+                                    f"{self.base_url}/datasets",
+                                    headers=headers,
+                                    timeout=aiohttp.ClientTimeout(total=10)
+                                ) as dataset_response:
+                                    
+                                    if dataset_response.status == 200:
+                                        dataset_data = await dataset_response.json()
+                                        datasets = dataset_data.get("value", [])
+                                        logger.info(f"Found {len(datasets)} datasets in personal workspace")
+                                        
+                                        if datasets:
+                                            # Add a virtual "My Workspace" entry
+                                            workspaces.append(WorkspaceInfo(
+                                                id="me",  # Special ID for personal workspace
+                                                name="My Workspace",
+                                                description="Personal workspace",
+                                                is_personal=True,
+                                                state="Active"
+                                            ))
+                                    else:
+                                        logger.info(f"Datasets API status: {dataset_response.status}")
+                            except Exception as e:
+                                logger.warning(f"Could not check personal workspace: {e}")
+                        
+                        logger.info(f"Retrieved {len(workspaces)} accessible workspaces")
                         
                         # Provide helpful messages if no workspaces found
                         if len(workspaces) == 0:
-                            logger.warning("No workspaces found. Troubleshooting steps:")
-                            logger.warning("1. Verify the app registration has Power BI API permissions:")
-                            logger.warning("   - Workspace.Read.All")
-                            logger.warning("   - Dataset.Read.All")
-                            logger.warning("   - Dataset.ReadWrite.All (if writing)")
-                            logger.warning("2. Grant the app access to specific workspaces:")
-                            logger.warning("   - Log into Power BI Service (app.powerbi.com)")
-                            logger.warning("   - Go to the workspace")
-                            logger.warning("   - Click 'Manage access' or the access icon")
-                            logger.warning("   - Click '+ Add people or groups'")
-                            logger.warning("   - Search for your app name or use the Application ID")
-                            logger.warning(f"   - Application ID: {self.credentials.client_id}")
-                            logger.warning("   - Grant at least 'Viewer' role")
-                            logger.warning("   - Click 'Add'")
-                            logger.warning("3. Wait 1-2 minutes for permissions to propagate")
-                            logger.warning("4. Try refreshing the page")
+                            logger.warning("=" * 60)
+                            logger.warning("NO WORKSPACES FOUND - TROUBLESHOOTING GUIDE:")
+                            logger.warning("=" * 60)
+                            logger.warning("1. Check API Permissions in Azure Portal:")
+                            logger.warning("   - You currently have DELEGATED permissions")
+                            logger.warning("   - For app-only auth, you need APPLICATION permissions")
+                            logger.warning("   - Add: Workspace.Read.All (Application)")
+                            logger.warning("   - Add: Dataset.Read.All (Application)")
+                            logger.warning("")
+                            logger.warning("2. Alternative: Enable Service Principals in Power BI:")
+                            logger.warning("   - Go to Power BI Admin Portal")
+                            logger.warning("   - Tenant settings → Developer settings")
+                            logger.warning("   - Enable 'Service principals can use Power BI APIs'")
+                            logger.warning("   - Add your app's Object ID to the security group")
+                            logger.warning("")
+                            logger.warning("3. Grant Workspace Access:")
+                            logger.warning("   - Go to each Power BI workspace")
+                            logger.warning("   - Click 'Access' → 'Add people or groups'")
+                            logger.warning("   - Search for your app by name or Application ID")
+                            logger.warning("   - Grant 'Viewer' or higher role")
+                            logger.warning("")
+                            logger.warning("4. Wait 5-15 minutes for permissions to propagate")
+                            logger.warning("=" * 60)
                         
                         return workspaces
                     
                     elif response.status == 401:
                         error_text = await response.text()
                         logger.error(f"Unauthorized access to workspaces API: {error_text}")
-                        logger.error("The access token may be invalid or expired")
+                        logger.error("The access token is valid but lacks proper permissions")
                         return []
                     
                     elif response.status == 403:
                         error_text = await response.text()
                         logger.error(f"Forbidden access to workspaces API: {error_text}")
-                        logger.error("The app registration needs the following API permissions:")
-                        logger.error("- Workspace.Read.All")
-                        logger.error("- Dataset.Read.All")
+                        
+                        # Parse error for more details
+                        try:
+                            error_json = json.loads(error_text)
+                            error_code = error_json.get("error", {}).get("code", "Unknown")
+                            error_message = error_json.get("error", {}).get("message", "Unknown")
+                            logger.error(f"Error code: {error_code}")
+                            logger.error(f"Error message: {error_message}")
+                            
+                            if "Unauthorized" in error_message:
+                                logger.error("The app registration lacks required API permissions")
+                        except:
+                            pass
+                            
                         return []
                     
                     else:
@@ -366,32 +433,25 @@ class PowerBIClient:
                         datasets = []
                         
                         for ds in data.get("value", []):
-                            dataset_name = ds.get('name', 'Unknown')
-                            dataset_id = ds.get('id', 'Unknown')
+                            # Log dataset info
+                            logger.info(f"Found dataset: {ds.get('name', 'Unknown')} (ID: {ds.get('id', 'Unknown')[:8]}...)")
                             
-                            logger.info(f"Found dataset: {dataset_name} (ID: {dataset_id[:8]}...)")
-                            
-                            # Include all datasets (don't filter)
-                            dataset = DatasetInfo(
-                                id=dataset_id,
-                                name=dataset_name,
-                                workspace_id=workspace_id,
-                                workspace_name=workspace_name or ("My Workspace" if workspace_id == "me" else workspace_name),
-                                configured_by=ds.get("configuredBy"),
-                                created_date=ds.get("createdDate"),
-                                content_provider_type=ds.get("contentProviderType")
-                            )
-                            datasets.append(dataset)
+                            # Only include datasets that can be queried
+                            if ds.get("isRefreshable", True) or ds.get("isEffectiveIdentityRequired", False) or True:  # Be more permissive
+                                dataset = DatasetInfo(
+                                    id=ds["id"],
+                                    name=ds["name"],
+                                    workspace_id=workspace_id,
+                                    workspace_name=workspace_name or "My Workspace" if workspace_id == "me" else workspace_name,
+                                    configured_by=ds.get("configuredBy"),
+                                    created_date=ds.get("createdDate"),
+                                    content_provider_type=ds.get("contentProviderType")
+                                )
+                                datasets.append(dataset)
+                            else:
+                                logger.info(f"Skipping non-queryable dataset: {ds.get('name', 'Unknown')}")
                         
-                        logger.info(f"Retrieved {len(datasets)} datasets from workspace {workspace_name}")
-                        
-                        if len(datasets) == 0:
-                            logger.warning(f"No datasets found in workspace {workspace_name}")
-                            logger.warning("Possible reasons:")
-                            logger.warning("1. The workspace may be empty")
-                            logger.warning("2. The app may not have Dataset.Read.All permission")
-                            logger.warning("3. Datasets may be in a Premium capacity that requires additional permissions")
-                        
+                        logger.info(f"Retrieved {len(datasets)} queryable datasets from workspace {workspace_name}")
                         return datasets
                     
                     elif response.status == 401:
@@ -402,7 +462,7 @@ class PowerBIClient:
                     elif response.status == 403:
                         error_text = await response.text()
                         logger.error(f"Forbidden access to datasets in workspace {workspace_name}: {error_text}")
-                        logger.error("The app needs at least 'Viewer' role in this workspace")
+                        logger.error("The app may not have access to this workspace's datasets")
                         return []
                     
                     elif response.status == 404:
@@ -431,30 +491,13 @@ class PowerBIClient:
             metadata = {
                 "tables": [],
                 "measures": [],
-                "relationships": [],
-                "dataset_id": dataset_id
+                "relationships": []
             }
             
-            # First, try to get dataset info
+            # First, try to get dataset refresh history to understand the model better
             async with aiohttp.ClientSession() as session:
                 try:
-                    # Get dataset details
-                    async with session.get(
-                        f"{self.base_url}/datasets/{dataset_id}",
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=10)
-                    ) as response:
-                        
-                        if response.status == 200:
-                            dataset_info = await response.json()
-                            metadata["name"] = dataset_info.get("name", "Unknown")
-                            metadata["configured_by"] = dataset_info.get("configuredBy")
-                            logger.info(f"Dataset name: {metadata['name']}")
-                except Exception as e:
-                    logger.warning(f"Could not get dataset info: {e}")
-                
-                # Try to get refresh history
-                try:
+                    # Get dataset refresh history
                     async with session.get(
                         f"{self.base_url}/datasets/{dataset_id}/refreshes",
                         headers=headers,
@@ -465,65 +508,72 @@ class PowerBIClient:
                         if response.status == 200:
                             refresh_data = await response.json()
                             if refresh_data.get("value"):
-                                last_refresh = refresh_data["value"][0]
-                                metadata["last_refresh"] = last_refresh.get("endTime")
-                                metadata["refresh_status"] = last_refresh.get("status")
-                                logger.info(f"Last refresh: {metadata['last_refresh']} - Status: {metadata['refresh_status']}")
+                                metadata["last_refresh"] = refresh_data["value"][0].get("endTime")
+                                logger.info(f"Dataset last refreshed: {metadata['last_refresh']}")
                 except Exception as e:
                     logger.warning(f"Could not get refresh history: {e}")
                 
-                # Try different approaches to get schema information
-                # Approach 1: Try DISCOVER_SCHEMA query
-                discover_query = "EVALUATE INFO.TABLES()"
+                # Execute a metadata query to discover tables and measures
+                metadata_query = """
+                EVALUATE
+                    UNION(
+                        SELECTCOLUMNS(
+                            INFO.TABLES(),
+                            "Type", "Table",
+                            "Name", [Name],
+                            "Description", [Description]
+                        ),
+                        SELECTCOLUMNS(
+                            INFO.MEASURES(),
+                            "Type", "Measure",
+                            "Name", [Name],
+                            "Description", [Description]
+                        )
+                    )
+                """
                 
-                logger.info("Attempting to discover dataset schema...")
-                result = await self.execute_dax_query(access_token, dataset_id, discover_query, "metadata")
+                # Try to execute metadata query
+                logger.info("Attempting to discover dataset schema using DAX query...")
+                result = await self.execute_dax_query(access_token, dataset_id, metadata_query)
                 
                 if result.success and result.data:
                     for item in result.data:
-                        table_name = item.get("Name", item.get("TABLE_NAME", ""))
-                        if table_name:
+                        if item.get("Type") == "Table":
                             metadata["tables"].append({
-                                "name": table_name,
-                                "type": "Table"
+                                "name": item.get("Name", ""),
+                                "description": item.get("Description", "")
                             })
-                    logger.info(f"Discovered {len(metadata['tables'])} tables using INFO.TABLES()")
+                        elif item.get("Type") == "Measure":
+                            metadata["measures"].append({
+                                "name": item.get("Name", ""),
+                                "description": item.get("Description", "")
+                            })
+                    
+                    logger.info(f"Discovered {len(metadata['tables'])} tables and {len(metadata['measures'])} measures")
                 else:
-                    # Approach 2: Try a simpler query
-                    logger.info("INFO.TABLES() failed, trying alternative approach...")
+                    # Fallback: Try simpler queries
+                    logger.info("Metadata query failed, using fallback approach")
                     
-                    # Just verify we can query the dataset
-                    test_query = "EVALUATE ROW(\"Test\", 1)"
-                    test_result = await self.execute_dax_query(access_token, dataset_id, test_query, "test")
+                    # Try to get at least some basic info
+                    simple_query = """
+                    EVALUATE
+                    ROW("Dataset", "Available")
+                    """
                     
+                    test_result = await self.execute_dax_query(access_token, dataset_id, simple_query)
                     if test_result.success:
-                        metadata["queryable"] = True
                         metadata["status"] = "accessible"
-                        logger.info("Dataset is queryable")
-                        
-                        # Since we can't get schema, provide generic guidance
-                        metadata["schema_discovery_failed"] = True
-                        metadata["notes"] = [
-                            "Dataset is accessible but schema discovery is not available",
-                            "You can still run queries if you know the table and measure names",
-                            "Common tables: 'Sales', 'Customer', 'Product', 'Date'",
-                            "Common measures: '[Total Sales]', '[Total Revenue]', '[Customer Count]'"
-                        ]
+                        logger.info("Dataset is accessible for queries")
                     else:
-                        metadata["queryable"] = False
-                        metadata["status"] = "not_queryable"
+                        metadata["status"] = "inaccessible"
                         metadata["error"] = test_result.error
-                        logger.warning(f"Dataset is not queryable: {test_result.error}")
+                        logger.warning(f"Dataset may not be fully accessible: {test_result.error}")
             
             return metadata
             
         except Exception as e:
             logger.error(f"Error fetching dataset metadata: {e}", exc_info=True)
-            return {
-                "error": str(e),
-                "dataset_id": dataset_id,
-                "status": "error"
-            }
+            return {"error": str(e)}
     
     async def execute_dax_query(self, access_token: str, dataset_id: str, dax_query: str, dataset_name: str = "") -> QueryResult:
         """Execute a DAX query against a Power BI dataset"""
@@ -572,14 +622,10 @@ class PowerBIClient:
                                 table = result["tables"][0]
                                 rows = table.get("rows", [])
                                 
-                                # Convert rows to list of dictionaries if needed
+                                # Convert rows to list of dictionaries
                                 formatted_rows = []
                                 for row in rows:
-                                    if isinstance(row, dict):
-                                        formatted_rows.append(row)
-                                    else:
-                                        # Handle other row formats if necessary
-                                        formatted_rows.append(row)
+                                    formatted_rows.append(row)
                                 
                                 logger.info(f"Query successful: {len(formatted_rows)} rows returned in {execution_time}ms")
                                 
@@ -603,22 +649,13 @@ class PowerBIClient:
                                     dataset_name=dataset_name
                                 )
                         else:
-                            # Check for errors in response
-                            if "error" in data:
-                                error_msg = self._extract_error_message(data)
-                                logger.error(f"Query error: {error_msg}")
-                                return QueryResult(
-                                    success=False,
-                                    error=error_msg,
-                                    execution_time_ms=execution_time
-                                )
-                            else:
-                                logger.warning("Query response contains no results")
-                                return QueryResult(
-                                    success=False,
-                                    error="No results returned from query",
-                                    execution_time_ms=execution_time
-                                )
+                            # No results in response
+                            logger.warning("Query response contains no results")
+                            return QueryResult(
+                                success=False,
+                                error="No results returned from query",
+                                execution_time_ms=execution_time
+                            )
                     
                     elif response.status == 400:
                         # Bad request - likely DAX syntax error
@@ -658,7 +695,7 @@ class PowerBIClient:
                         logger.error(f"Dataset {dataset_id} not found")
                         return QueryResult(
                             success=False,
-                            error=f"Dataset not found or not accessible",
+                            error=f"Dataset {dataset_id} not found or not accessible",
                             execution_time_ms=execution_time
                         )
                     
@@ -690,32 +727,20 @@ class PowerBIClient:
     
     def _extract_error_message(self, error_data: Dict[str, Any]) -> str:
         """Extract meaningful error message from Power BI error response"""
-        try:
-            if "error" in error_data:
-                error = error_data["error"]
-                if isinstance(error, dict):
-                    # Try different error message locations
-                    if "message" in error:
-                        return error["message"]
-                    elif "pbi.error" in error:
-                        pbi_error = error["pbi.error"]
-                        if "details" in pbi_error and isinstance(pbi_error["details"], list) and len(pbi_error["details"]) > 0:
-                            detail = pbi_error["details"][0]
-                            if "detail" in detail and isinstance(detail["detail"], dict) and "value" in detail["detail"]:
-                                return detail["detail"]["value"]
-                        if "message" in pbi_error:
-                            return pbi_error["message"]
-                    elif "code" in error and "message" in error:
-                        return f"{error['code']}: {error['message']}"
-                else:
-                    return str(error)
-            
-            # Fallback: return the entire error data as string
-            return json.dumps(error_data)[:500]  # Limit length
-            
-        except Exception as e:
-            logger.error(f"Error extracting error message: {e}")
-            return "Unknown error occurred"
+        if "error" in error_data:
+            error = error_data["error"]
+            if isinstance(error, dict):
+                # Check for detailed error information
+                if "pbi.error" in error:
+                    pbi_error = error["pbi.error"]
+                    if "details" in pbi_error and len(pbi_error["details"]) > 0:
+                        detail = pbi_error["details"][0]
+                        return detail.get("detail", {}).get("value", error.get("message", "Unknown error"))
+                return error.get("message", "Unknown error")
+            else:
+                return str(error)
+        
+        return "Unknown error occurred"
     
     async def validate_configuration(self) -> Dict[str, Any]:
         """Validate Power BI configuration and connectivity"""
@@ -760,67 +785,42 @@ class PowerBIClient:
             return validation_result
         
         # Try to get access token
-        try:
-            token = await self.get_access_token()
-            if token:
-                validation_result["token_acquired"] = True
-                logger.info("✓ Successfully acquired access token")
+        token = await self.get_access_token()
+        if token:
+            validation_result["token_acquired"] = True
+            logger.info("✓ Successfully acquired access token")
+            
+            # Try to access API
+            try:
+                workspaces = await self.get_user_workspaces(token)
+                validation_result["api_accessible"] = True
                 
-                # Try to access API
-                try:
-                    workspaces = await self.get_user_workspaces(token)
-                    validation_result["api_accessible"] = True
+                if workspaces:
+                    validation_result["workspaces_accessible"] = True
+                    validation_result["workspace_count"] = len(workspaces)
+                    logger.info(f"✓ Found {len(workspaces)} accessible workspaces")
+                else:
+                    validation_result["warnings"].append("No workspaces accessible - You need APPLICATION permissions, not DELEGATED")
+                    validation_result["warnings"].append("Add Workspace.Read.All and Dataset.Read.All as APPLICATION permissions in Azure Portal")
+                    validation_result["warnings"].append("Alternative: Enable service principals in Power BI Admin Portal")
+                    logger.warning("⚠ No workspaces accessible")
                     
-                    if workspaces:
-                        validation_result["workspaces_accessible"] = True
-                        validation_result["workspace_count"] = len(workspaces)
-                        validation_result["workspace_names"] = [ws.name for ws in workspaces[:5]]  # First 5
-                        logger.info(f"✓ Found {len(workspaces)} accessible workspaces")
-                        
-                        # Log workspace names
-                        for ws in workspaces[:5]:
-                            logger.info(f"  - {ws.name} (Personal: {ws.is_personal})")
-                        if len(workspaces) > 5:
-                            logger.info(f"  ... and {len(workspaces) - 5} more")
-                    else:
-                        validation_result["warnings"].append("No workspaces accessible - see troubleshooting steps below")
-                        validation_result["warnings"].append(f"App Client ID: {self.credentials.client_id}")
-                        validation_result["warnings"].append("Grant this app access to workspaces in Power BI Service")
-                        logger.warning("⚠ No workspaces accessible")
-                        
-                except Exception as e:
-                    validation_result["errors"].append(f"API access error: {str(e)}")
-                    logger.error(f"✗ API access error: {str(e)}")
-            else:
-                validation_result["errors"].append("Failed to acquire access token - check credentials and permissions")
-                logger.error("✗ Failed to acquire access token")
-                
-        except Exception as e:
-            validation_result["errors"].append(f"Token acquisition error: {str(e)}")
-            logger.error(f"✗ Token acquisition error: {str(e)}")
-        
-        # Add guidance
-        if not validation_result["workspaces_accessible"]:
-            validation_result["troubleshooting"] = [
-                "1. Ensure app registration has API permissions:",
-                "   - Workspace.Read.All",
-                "   - Dataset.Read.All",
-                "   - Dataset.ReadWrite.All (optional)",
-                "2. Grant admin consent for the permissions",
-                "3. Add the app to Power BI workspaces:",
-                "   - Log into app.powerbi.com",
-                "   - Go to your workspace",
-                "   - Click 'Manage access'",
-                "   - Add the app with Viewer or higher role",
-                f"   - App Client ID: {self.credentials.client_id}",
-                "4. Wait 1-2 minutes and try again"
-            ]
+            except Exception as e:
+                validation_result["errors"].append(f"API access error: {str(e)}")
+                logger.error(f"✗ API access error: {str(e)}")
+        else:
+            validation_result["errors"].append("Failed to acquire access token - check credentials")
+            logger.error("✗ Failed to acquire access token")
+            
+            # Add specific guidance
+            validation_result["warnings"].append("Ensure app registration has correct API permissions (Application, not Delegated)")
+            validation_result["warnings"].append("Verify the client secret hasn't expired")
         
         # Summary
         if validation_result["workspaces_accessible"]:
             logger.info("✓ Power BI configuration is valid and working")
         else:
-            logger.warning("⚠ Power BI configuration needs attention - check errors and warnings")
+            logger.warning("⚠ Power BI configuration has issues - check errors and warnings")
         
         return validation_result
     
