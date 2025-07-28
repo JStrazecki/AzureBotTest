@@ -40,7 +40,9 @@ jobs:
       - name: Unzip artifact for deployment
         run: unzip -o release.zip
 
-      
+      - name: Wait before deployment
+        run: sleep 30
+
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
