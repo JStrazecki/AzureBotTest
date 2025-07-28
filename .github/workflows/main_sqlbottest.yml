@@ -40,10 +40,11 @@ jobs:
       - name: Unzip artifact for deployment
         run: unzip -o release.zip
 
+      
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
           app-name: 'sqlbottest'
           slot-name: 'Production'
-          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_3F807857F4CF488CB1612EF00DF857DF }}
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_9F32AA6E60224F2390156C5CB2702CB4 }}
