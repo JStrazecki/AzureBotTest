@@ -38,7 +38,7 @@ jobs:
         run: zip release.zip ./* -r
 
       - name: Unzip artifact for deployment
-        run: unzip release.zip
+        run: unzip -o release.zip
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
