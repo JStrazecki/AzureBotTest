@@ -1,5 +1,5 @@
 build-and-deploy
-failed now in 6m 9s
+failed 9 minutes ago in 6m 9s
 Search logs
 4s
 1s

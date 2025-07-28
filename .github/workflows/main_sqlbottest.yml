@@ -50,3 +50,5 @@ jobs:
           app-name: 'sqlbottest'
           slot-name: 'Production'
           publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE_9F32AA6E60224F2390156C5CB2702CB4 }}
+          retry-on-error: true
+          retry-count: 3
